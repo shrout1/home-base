@@ -32,16 +32,19 @@
           </select>
         </label>
       </div>
-      <ol id="source-url-help" class="vpn-help-steps">
-        <li>Open the doc in Google Docs, one IP or CIDR block per line.</li>
-        <li>File &rarr; Share &rarr; Publish to web &rarr; Publish, then copy the link it gives you.</li>
-        <li>Paste that link below. It'll look like <code>https://docs.google.com/document/d/e/&hellip;/pub</code> --
-          that's the right kind of link (this dashboard reads the page's text content either way,
-          so a plain-text URL from anywhere else works too, not just Google Docs).</li>
-        <li>In that same Publish to web dialog, make sure <strong>"Automatically republish when changes are made"</strong>
-          is checked -- otherwise edits to the doc won't show up here until you come back and republish by hand.
-          Even with it checked, Google can take a few minutes to actually update the published page after each edit.</li>
-      </ol>
+      <details class="help-details">
+        <summary>&rsaquo; How to configure</summary>
+        <ol id="source-url-help" class="vpn-help-steps">
+          <li>Open the doc in Google Docs, one IP or CIDR block per line.</li>
+          <li>File &rarr; Share &rarr; Publish to web &rarr; Publish, then copy the link it gives you.</li>
+          <li>Paste that link below. It'll look like <code>https://docs.google.com/document/d/e/&hellip;/pub</code> --
+            that's the right kind of link (this dashboard reads the page's text content either way,
+            so a plain-text URL from anywhere else works too, not just Google Docs).</li>
+          <li>In that same Publish to web dialog, make sure <strong>"Automatically republish when changes are made"</strong>
+            is checked -- otherwise edits to the doc won't show up here until you come back and republish by hand.
+            Even with it checked, Google can take a few minutes to actually update the published page after each edit.</li>
+        </ol>
+      </details>
       <div class="clock-form">
         <label id="source-url-field">URL <input type="text" id="source-url-input" placeholder="https://docs.google.com/document/d/e/.../pub"></label>
         <label id="source-gist-id-field" hidden>Gist ID <input type="text" id="source-gist-id-input"></label>

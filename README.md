@@ -5,6 +5,8 @@ you're traveling, without SSHing in by hand. Update a doc (a GitHub gist, or
 any URL that hands back plain text) with your current public IP, and
 home-base notices within a poll cycle and applies it to the firewall.
 
+![home-base dashboard](docs/dashboard.jpg)
+
 If a VPN server already exists on the box, home-base adopts it as-is (never
 modifies its config, PKI, or firewall rules beyond the one whitelist set's
 membership). If not, `install.sh` provisions one from scratch: OpenVPN +

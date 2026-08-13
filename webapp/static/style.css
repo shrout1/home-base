@@ -220,3 +220,22 @@ button:disabled {
   border-radius: 4px;
   font-size: 0.75rem;
 }
+
+.help-details {
+  margin: 0.5rem 0;
+}
+.help-details summary {
+  cursor: pointer;
+  font-size: 0.8rem;
+  color: var(--accent);
+  list-style: none;
+}
+.help-details summary::-webkit-details-marker {
+  display: none;
+}
+.help-details[open] summary {
+  margin-bottom: 0.25rem;
+}
+.help-details .vpn-help-steps {
+  margin-top: 0;
+}
