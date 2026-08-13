@@ -100,6 +100,11 @@ token is what actually gates read access here). Generate a fine-grained
 personal access token scoped to read-only Gist access
 (https://github.com/settings/tokens?type=beta).
 
+**Not yet tested end-to-end** -- `raw_url` (via a Google Doc published to
+the web) is what's actually been run against a live source so far. The
+gist fetch path is implemented but unverified; expect rough edges until
+someone actually points a real gist at it.
+
 ### Source: raw_url
 
 Any URL that responds to a plain unauthenticated GET with the whitelist
