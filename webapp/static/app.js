@@ -35,7 +35,7 @@ function renderSource(data) {
     const idPart = data.source.gist_id ? `gist ${data.source.gist_id}` : "no gist ID set";
     detail = `${idPart}, token ${data.source.gist_token_configured ? "configured" : "MISSING"}`;
   } else if (data.source.source_type === "raw_url") {
-    detail = data.source.source_url_configured ? "URL configured" : "URL MISSING";
+    detail = data.source.source_url || "URL MISSING";
   }
   setText("source-detail", detail);
 
@@ -153,6 +153,8 @@ function prefillSourceForm(data) {
   if (type) document.getElementById("source-type-select").value = type;
   if (type === "github_gist" && data.source.gist_id) {
     document.getElementById("source-gist-id-input").value = data.source.gist_id;
+  } else if (type === "raw_url" && data.source.source_url) {
+    document.getElementById("source-url-input").value = data.source.source_url;
   }
   updateSourceFormVisibility();
 }

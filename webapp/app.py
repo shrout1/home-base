@@ -343,15 +343,19 @@ def _sync_loop():
 
 
 def get_source_summary(conf):
-    """Never echoes the actual token/URL back -- both are credentials by
-    this project's own design (see homebase.conf.example)."""
+    """GIST_TOKEN is never echoed back -- that's a real credential. The URL
+    itself is shown, though: unlike a password, whoever configured it
+    already has it, and being able to see what's actually set on this
+    LAN/loopback-only dashboard (rather than needing to SSH in and grep
+    homebase.conf to check) is worth more than the marginal extra exposure
+    of it appearing here."""
     source_type = conf.get("SOURCE_TYPE", "")
     summary = {"source_type": source_type}
     if source_type == "github_gist":
         summary["gist_id"] = conf.get("GIST_ID") or None
         summary["gist_token_configured"] = bool(conf.get("GIST_TOKEN"))
     elif source_type == "raw_url":
-        summary["source_url_configured"] = bool(conf.get("SOURCE_URL"))
+        summary["source_url"] = conf.get("SOURCE_URL") or None
     return summary
 
 
