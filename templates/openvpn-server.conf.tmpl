@@ -1,0 +1,33 @@
+# Managed by home-base install.sh — do not edit by hand, edit homebase.conf instead.
+# Only rendered when install.sh provisions a fresh OpenVPN server (no existing
+# one was detected). An adopted existing server's config is never touched.
+port __OPENVPN_PORT__
+proto __OPENVPN_PROTO__
+# Explicit device name (not just "tun", which lets the kernel auto-assign
+# whatever's next available) -- the nftables scaffolding this installer also
+# creates references "tun0" by name, so the two have to agree on it rather
+# than relying on allocation-order luck.
+dev tun0
+ca ca.crt
+cert server.crt
+key server.key
+dh none
+ecdh-curve secp384r1
+tls-crypt tc.key
+crl-verify crl.pem
+topology subnet
+server __OPENVPN_SUBNET__ __OPENVPN_SUBNET_MASK__
+push "route __LAN_NETWORK__ __LAN_NETMASK__"
+keepalive 10 120
+cipher AES-256-GCM
+data-ciphers AES-256-GCM
+auth SHA256
+tls-version-min 1.2
+persist-key
+persist-tun
+user nobody
+group nogroup
+status /var/log/openvpn/server-status.log
+log-append /var/log/openvpn/server.log
+verb 3
+explicit-exit-notify 1

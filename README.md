@@ -1,0 +1,166 @@
+# home-base
+
+Runs an OpenVPN server whose access whitelist you can update from wherever
+you're traveling, without SSHing in by hand. Update a doc (a GitHub gist, or
+any URL that hands back plain text) with your current public IP, and
+home-base notices within a poll cycle and applies it to the firewall.
+
+If a VPN server already exists on the box, home-base adopts it as-is (never
+modifies its config, PKI, or firewall rules beyond the one whitelist set's
+membership). If not, `install.sh` provisions one from scratch: OpenVPN +
+easy-rsa PKI, the nftables scaffolding to gate it, and (best-effort) a
+No-IP dynamic DNS client. Either way, the dashboard lets you generate new
+client certs and download a backup of everything you'd need to recover the
+PKI if the box died.
+
+## How it works
+
+- A small Flask app (`webapp/app.py`) runs as a systemd service. A
+  background thread polls the configured whitelist source every
+  `POLL_INTERVAL_SECONDS` (reloaded fresh each cycle, so a source change
+  saved through the dashboard takes effect on the next poll, not just after
+  a restart), parses out IP/CIDR entries, and diffs them against the
+  nftables set's current elements.
+- Only the diff is applied (`nft add element`/`nft delete element`) --
+  never a flush-and-recreate, so the set is never briefly empty (which
+  would reject every connection, including your own, for whatever window
+  it took to repopulate).
+- The whitelist document is the source of truth: home-base makes the set
+  match it exactly. If you remove an IP from the doc, it's removed from
+  the set on the next sync. If the doc is empty, the set ends up empty --
+  that's treated as a deliberate "revoke everyone" state, not an error.
+- If fetching the source fails (network error, bad auth, unreachable
+  URL), home-base leaves the set untouched and reports the error on the
+  dashboard, rather than risk clearing your access because of a transient
+  problem that would have resolved itself next poll.
+- The dashboard is bound to loopback and `DASHBOARD_LAN_IP` only -- never
+  the internet-facing interface.
+
+## Setup
+
+```sh
+cp homebase.conf.example homebase.conf
+$EDITOR homebase.conf
+sudo ./install.sh
+```
+
+Re-running `install.sh` is safe -- idempotent: an already-provisioned
+OpenVPN server/PKI is never re-provisioned or touched, and
+`/etc/home-base/homebase.conf` is left alone once deployed (it may have
+been edited since via the dashboard's source-config form, which writes
+there directly -- edit that file, or the dashboard, not this repo's copy,
+for changes after the first install).
+
+### OpenVPN: adopt vs. provision
+
+install.sh checks for `/etc/openvpn/server/server.conf` and the target
+nftables set (`NFT_FAMILY`/`NFT_TABLE`/`NFT_SET`) together:
+
+- **Both present** -- adopted as-is. Nothing about your existing setup is
+  modified.
+- **Neither present** -- provisioned from scratch: an ECDSA (secp384r1)
+  easy-rsa PKI at `/etc/openvpn/easy-rsa`, a server config using modern
+  ciphers (AES-256-GCM, tls-crypt, `dh none`/ECDH) on `OPENVPN_PORT`/
+  `OPENVPN_PROTO`, and an nftables table gating that port behind
+  `NFT_SET` -- `WAN_IF` (the internet-facing interface) is auto-detected
+  from the default route.
+- **One present, not the other** -- install.sh refuses and tells you what's
+  missing, rather than guessing how to reconcile an inconsistent state.
+
+### DDNS: No-IP (`noip-duc`) only, for now
+
+Same adopt-or-configure logic: an already-installed, already-configured
+`noip-duc` is left alone (its hostname is read from `/etc/default/noip-duc`
+to auto-fill `VPN_REMOTE_HOST` if that's blank). If it's installed but
+unconfigured, and `NOIP_USERNAME`/`NOIP_PASSWORD`/`NOIP_HOSTNAMES` are set
+in `homebase.conf`, it gets configured. `noip-duc` isn't in any apt repo --
+No-IP ships it as a direct `.deb` download with no stable scriptable URL --
+so on a box that doesn't have it yet, install.sh warns and tells you to
+`dpkg -i` it yourself first, rather than guess at a download URL that might
+silently break.
+
+### Whitelist doc format
+
+One IP or CIDR block per line. Blank lines and `#` comments are ignored;
+anything else that doesn't parse as an IPv4 address/CIDR gets skipped and
+shows up as a warning on the dashboard instead of silently vanishing.
+
+```
+# home
+73.138.176.119
+# hotel wifi, remove when I check out
+24.5.10.0/24
+```
+
+### Source: github_gist
+
+Create a gist with the whitelist doc as its content -- **secret**, not
+public (secret just means unlisted, not access-controlled by itself; the
+token is what actually gates read access here). Generate a fine-grained
+personal access token scoped to read-only Gist access
+(https://github.com/settings/tokens?type=beta).
+
+### Source: raw_url
+
+Any URL that responds to a plain unauthenticated GET with the whitelist
+text works -- a secret gist's raw content URL
+(`gist.githubusercontent.com/.../raw/...`), a Google Doc published to the
+web (File > Share > Publish to web -- its URL is already a long random
+ID), or anything else. Treat the URL itself as a credential: whoever has
+it can read (not modify) your current whitelist, so use something with
+enough entropy in the URL that it can't be guessed or crawled.
+
+Either source type can be set at install time in `homebase.conf`, or
+configured (and switched between) later from the dashboard's "Configure
+source" form -- saving immediately triggers a real sync against the new
+settings, so a bad URL or unreachable gist shows up as an error right away
+instead of silently failing on the next scheduled poll.
+
+## Dashboard
+
+- **Whitelist source** -- current source config (credentials masked) and a
+  form to set or change it, with immediate reachability/parse feedback on
+  save.
+- **Sync status** -- last attempt/success, current status, a manual "Sync
+  now" button, and any per-line parse warnings from the whitelist doc.
+- **Current whitelist** / **Last sync changes** -- what's actually in the
+  nftables set right now, and what the most recent sync added/removed.
+- **VPN Clients** -- generate a new client certificate by name; the
+  assembled `.ovpn` bundle (ca/cert/key/tls-crypt inline, pointed at
+  `VPN_REMOTE_HOST`) downloads immediately. Lists existing issued clients
+  from the PKI's own index.
+- **Backup** -- downloads a `.tar.gz` of the CA private key, server
+  cert/key, tls-crypt key, and `homebase.conf`. Losing the CA key means
+  every issued client cert becomes permanently unmanageable -- download
+  this and store it somewhere genuinely secure after the first install.
+
+## Config reference (`homebase.conf`)
+
+| Variable | Meaning |
+|---|---|
+| `NFT_FAMILY` / `NFT_TABLE` / `NFT_SET` | Which nftables set to sync (adopted if it exists, created if provisioning fresh). |
+| `POLL_INTERVAL_SECONDS` | How often the background loop checks the source. |
+| `SOURCE_TYPE` | `github_gist` or `raw_url`. |
+| `GIST_ID` / `GIST_TOKEN` | Used for `github_gist`. |
+| `SOURCE_URL` | Used for `raw_url`. |
+| `DASHBOARD_PORT` / `DASHBOARD_LAN_IP` | Where the status dashboard listens -- loopback and this address only. |
+| `OPENVPN_PORT` / `OPENVPN_PROTO` / `OPENVPN_SUBNET` / `OPENVPN_SUBNET_MASK` | Only used when provisioning a fresh server. |
+| `LAN_SUBNET` | Pushed to clients as a route, when provisioning fresh. |
+| `EASYRSA_REQ_CN` | The CA's own CN when provisioning fresh -- must differ from any client's CN. |
+| `VPN_REMOTE_HOST` | Hostname/IP embedded in generated client `.ovpn` bundles. Auto-filled from an adopted/configured `noip-duc` hostname if blank. |
+| `NOIP_USERNAME` / `NOIP_PASSWORD` / `NOIP_HOSTNAMES` | Used to configure `noip-duc` if it's installed but not yet configured. |
+
+`homebase.conf` is gitignored since it can hold a gist token and (if
+provisioning DDNS fresh) a No-IP password -- copy it from
+`homebase.conf.example` locally rather than committing real credentials.
+
+## Security notes
+
+- The dashboard never echoes back `GIST_TOKEN` or `SOURCE_URL` -- the
+  status API only reports whether they're configured, not their values.
+- `homebase.conf` is installed `0600`, root-owned.
+- The service runs as root (same trust boundary as pi5-router's own
+  dashboard) since it needs to run `nft`, `easyrsa`, and manage OpenVPN.
+- When adopting an existing setup, home-base only ever adds/removes
+  elements in the one nftables set you point it at -- it never touches any
+  other table, chain, or rule.

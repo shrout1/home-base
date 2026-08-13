@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>home-base</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <h1>home-base</h1>
+  <span id="refresh-indicator" class="dot"></span>
+</header>
+
+<main>
+  <section class="grid">
+    <div class="card" id="card-source">
+      <h2>Whitelist source</h2>
+      <dl>
+        <dt>Type</dt><dd id="source-type">&mdash;</dd>
+        <dt>Detail</dt><dd id="source-detail">&mdash;</dd>
+        <dt>nftables target</dt><dd id="nft-target">&mdash;</dd>
+        <dt>Poll interval</dt><dd id="poll-interval">&mdash;</dd>
+      </dl>
+
+      <h3>Configure source</h3>
+      <div class="clock-form">
+        <label>Type
+          <select id="source-type-select">
+            <option value="raw_url">Google Doc</option>
+            <option value="github_gist">GitHub gist</option>
+          </select>
+        </label>
+      </div>
+      <ol id="source-url-help" class="vpn-help-steps">
+        <li>Open the doc in Google Docs, one IP or CIDR block per line.</li>
+        <li>File &rarr; Share &rarr; Publish to web &rarr; Publish, then copy the link it gives you.</li>
+        <li>Paste that link below. It'll look like <code>https://docs.google.com/document/d/e/&hellip;/pub</code> --
+          that's the right kind of link (this dashboard reads the page's text content either way,
+          so a plain-text URL from anywhere else works too, not just Google Docs).</li>
+        <li>In that same Publish to web dialog, make sure <strong>"Automatically republish when changes are made"</strong>
+          is checked -- otherwise edits to the doc won't show up here until you come back and republish by hand.
+          Even with it checked, Google can take a few minutes to actually update the published page after each edit.</li>
+      </ol>
+      <div class="clock-form">
+        <label id="source-url-field">URL <input type="text" id="source-url-input" placeholder="https://docs.google.com/document/d/e/.../pub"></label>
+        <label id="source-gist-id-field" hidden>Gist ID <input type="text" id="source-gist-id-input"></label>
+        <label id="source-gist-token-field" hidden>Gist token <input type="password" id="source-gist-token-input" autocomplete="off" placeholder="leave blank to keep current"></label>
+      </div>
+      <button id="source-save">Save &amp; test</button>
+      <p id="source-message" class="message"></p>
+    </div>
+
+    <div class="card" id="card-sync">
+      <h2>Sync status</h2>
+      <dl>
+        <dt>Status</dt><dd id="sync-status" class="status">&mdash;</dd>
+        <dt>Last attempt</dt><dd id="sync-last">&mdash;</dd>
+        <dt>Last success</dt><dd id="sync-last-success">&mdash;</dd>
+      </dl>
+      <button id="sync-now">Sync now</button>
+      <p id="sync-message" class="message"></p>
+      <ul id="sync-warnings" class="warning-list" hidden></ul>
+    </div>
+  </section>
+
+  <section class="card" id="card-current">
+    <h2>Current whitelist</h2>
+    <ul id="current-elements" class="pill-list empty">
+      <li>none</li>
+    </ul>
+  </section>
+
+  <section class="card" id="card-changes">
+    <h2>Last sync changes</h2>
+    <ul id="last-changes" class="pill-list empty">
+      <li>no changes</li>
+    </ul>
+  </section>
+
+  <section class="card" id="card-active-clients">
+    <h2>Active Clients</h2>
+    <ul id="active-client-list" class="pill-list empty">
+      <li>nobody connected</li>
+    </ul>
+  </section>
+
+  <section class="card" id="card-clients">
+    <h2>Client Certificates</h2>
+    <ul id="client-list" class="pill-list empty">
+      <li>none yet</li>
+    </ul>
+    <div class="clock-form">
+      <label>New client name <input type="text" id="new-client-name" placeholder="e.g. phone"></label>
+    </div>
+    <button id="generate-client">Generate cert &amp; download</button>
+    <p id="client-message" class="message"></p>
+  </section>
+
+  <section class="card" id="card-backup">
+    <h2>Backup</h2>
+    <p class="power-desc">
+      Downloads the CA private key, server cert/key, tls-crypt key, and
+      homebase.conf as a .tar.gz. Losing the CA key means every issued
+      client cert becomes unmanageable -- store this somewhere genuinely
+      secure (password manager, encrypted drive), not a Downloads folder.
+    </p>
+    <button id="download-backup" class="btn-warn">Download backup bundle</button>
+    <p id="backup-message" class="message"></p>
+  </section>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>

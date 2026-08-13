@@ -1,0 +1,77 @@
+# Copy this file to homebase.conf and edit. homebase.conf is gitignored --
+# it can hold a read-only gist access token, don't commit real credentials.
+
+# Which nftables set gets synced to match the whitelist source. If it
+# already exists (as part of whatever firewall setup your VPN server
+# already has), install.sh adopts it as-is and never modifies it beyond
+# element membership. If it doesn't exist AND no existing OpenVPN server is
+# detected either, install.sh provisions both from scratch using these same
+# names.
+NFT_FAMILY="inet"
+NFT_TABLE="filter"
+NFT_SET="vpn_allowed"
+
+# How often the background sync loop checks the source for changes.
+POLL_INTERVAL_SECONDS=900
+
+# Where the whitelist comes from -- "github_gist" or "raw_url".
+SOURCE_TYPE="raw_url"
+
+# github_gist: a gist containing one IP (or CIDR) per line, one entry per
+# line, "#" for comments. Use a fine-grained personal access token scoped to
+# read-only access to Gists -- https://github.com/settings/tokens?type=beta
+GIST_ID=""
+GIST_TOKEN=""
+
+# raw_url: any URL that responds to a plain unauthenticated GET with the
+# whitelist text in the same one-entry-per-line format -- a secret gist's
+# raw content URL, a published-to-web Google Doc, or anything else that
+# hands back fetchable plain text at an address nobody can guess. Treat the
+# URL itself as a credential: whoever has it can read (not modify) your
+# current whitelist.
+SOURCE_URL=""
+
+# Dashboard: reachable from loopback and DASHBOARD_LAN_IP only, same
+# posture as pi5-router's own dashboard. Never bind this to the
+# internet-facing interface/IP.
+DASHBOARD_PORT="8081"
+DASHBOARD_LAN_IP="10.0.0.10"
+
+# ---------------------------------------------------------------------------
+# OpenVPN -- only used if install.sh doesn't find an existing server
+# (systemd unit openvpn-server@server, or /etc/openvpn/server/server.conf).
+# An existing one is adopted and never modified. These settings, and the
+# nftables scaffolding around NFT_SET above, are only used for a from-scratch
+# install on a clean box.
+# ---------------------------------------------------------------------------
+OPENVPN_PORT="1194"
+OPENVPN_PROTO="udp"
+OPENVPN_SUBNET="10.8.0.0"
+OPENVPN_SUBNET_MASK="255.255.255.0"
+# Pushed to clients as an additional route, and used for the "LAN traffic is
+# always allowed" nftables rule -- your actual LAN subnet.
+LAN_SUBNET="10.0.0.0/24"
+# CA's own certificate CN -- must differ from any client's CN (an existing
+# real-world bug this project ran into: a client cert accidentally sharing
+# the CA's CN causes ambiguous server logs and can conflict with
+# `duplicate-cn` handling).
+EASYRSA_REQ_CN="home-base-CA"
+
+# Hostname or IP clients should dial -- embedded in generated .ovpn bundles
+# (dashboard's Clients card). install.sh auto-fills this from an adopted
+# noip-duc's configured hostname if it's blank and one is found; otherwise
+# set it yourself (prefer a DDNS hostname over a raw IP -- residential IPs
+# change).
+VPN_REMOTE_HOST=""
+
+# ---------------------------------------------------------------------------
+# DDNS -- No-IP only for now (noip-duc). An existing installation is
+# detected and adopted (its own /etc/default/noip-duc is read for display,
+# never overwritten). These settings are only used to configure a fresh
+# noip-duc install, and only if the noip-duc package is already present --
+# it isn't in any apt repo (No-IP ships it as a direct .deb download with no
+# stable scriptable URL), so install.sh won't try to fetch it for you on a
+# clean box; it'll tell you to install it yourself first.
+NOIP_USERNAME=""
+NOIP_PASSWORD=""
+NOIP_HOSTNAMES=""
