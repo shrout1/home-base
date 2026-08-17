@@ -40,7 +40,7 @@ else
 fi
 
 for v in NFT_FAMILY NFT_TABLE NFT_SET POLL_INTERVAL_SECONDS SOURCE_TYPE \
-         DASHBOARD_PORT DASHBOARD_LAN_IP OPENVPN_PORT OPENVPN_PROTO \
+         DASHBOARD_PORT DASHBOARD_ALLOWED_SUBNET OPENVPN_PORT OPENVPN_PROTO \
          OPENVPN_SUBNET OPENVPN_SUBNET_MASK LAN_SUBNET EASYRSA_REQ_CN; do
     [[ -n "${!v:-}" ]] || die "config variable $v is not set"
 done
@@ -200,6 +200,36 @@ EOF
 fi
 
 # ---------------------------------------------------------------------------
+# 3b. Dashboard access rule -- runs every time (fresh provision or adopted
+#     box alike), unlike the VPN scaffolding above. The dashboard binds to
+#     0.0.0.0 (see webapp/app.py); this rule is the only thing standing
+#     between that and the open internet, so it isn't optional the way the
+#     rest of this installer's "adopt, don't touch" posture is. Idempotent:
+#     checks for an existing matching rule before adding another.
+# ---------------------------------------------------------------------------
+log "ensuring an nftables rule allows dashboard access from $DASHBOARD_ALLOWED_SUBNET"
+WAN_IF="${WAN_IF:-$(ip route show default | awk '/default/ {for (i=1;i<=NF;i++) if ($i=="dev") print $(i+1); exit}')}"
+[[ -n "$WAN_IF" ]] || die "could not detect the interface to scope the dashboard nftables rule to"
+
+if nft list chain "$NFT_FAMILY" "$NFT_TABLE" input 2>/dev/null \
+        | grep -q "dport $DASHBOARD_PORT .*ip saddr $DASHBOARD_ALLOWED_SUBNET"; then
+    log "  rule already present -- leaving it as-is"
+else
+    nft add rule "$NFT_FAMILY" "$NFT_TABLE" input \
+        iifname "$WAN_IF" tcp dport "$DASHBOARD_PORT" ip saddr "$DASHBOARD_ALLOWED_SUBNET" accept
+    log "  added: accept tcp dport $DASHBOARD_PORT from $DASHBOARD_ALLOWED_SUBNET on $WAN_IF"
+    # /etc/nftables.conf (loaded by nftables.service at boot) is a separate
+    # file from the live ruleset `nft add` just changed -- snapshot the live
+    # ruleset (now including this rule) so it survives a reboot.
+    {
+        echo '#!/usr/sbin/nft -f'
+        echo 'flush ruleset'
+        nft list ruleset
+    } > /etc/nftables.conf
+    log "  persisted to /etc/nftables.conf"
+fi
+
+# ---------------------------------------------------------------------------
 # 4. DDNS (No-IP / noip-duc) -- adopt if present, otherwise this is
 #    supplementary: warn and move on rather than block the rest of the
 #    install. noip-duc isn't in any apt repo (a direct .deb download from
@@ -283,8 +313,8 @@ home-base setup complete.
   OpenVPN        : $([[ "$OPENVPN_SERVER_EXISTS" -eq 1 ]] && echo "existing server adopted" || echo "provisioned fresh on $OPENVPN_PORT/$OPENVPN_PROTO")
   Syncing        : $NFT_FAMILY $NFT_TABLE $NFT_SET, every ${POLL_INTERVAL_SECONDS}s
   Source         : $SOURCE_TYPE
-  Dashboard      : http://127.0.0.1:${DASHBOARD_PORT} or http://${DASHBOARD_LAN_IP}:${DASHBOARD_PORT}
-                    (reachable only from those addresses, same posture as pi5-router's dashboard)
+  Dashboard      : http://<this box's address>:${DASHBOARD_PORT}
+                    (nftables restricts access to $DASHBOARD_ALLOWED_SUBNET)
 
 Edit /etc/home-base/homebase.conf and \`systemctl restart home-base\` to change source
 settings, the poll interval, or which nftables set gets synced. Generate client certs

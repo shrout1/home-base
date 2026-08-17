@@ -4,9 +4,15 @@
 # plain text), so a VPN server's access whitelist can be updated from
 # wherever the admin is traveling without SSHing in by hand.
 #
-# Binds only to 127.0.0.1 and DASHBOARD_LAN_IP -- never 0.0.0.0 -- same
-# posture as pi5-router's own dashboard: no listening socket at all on the
-# internet-facing interface.
+# Binds to 0.0.0.0:DASHBOARD_PORT -- access control is nftables' job, not
+# the bind address (see the dashboard rule installer.sh adds: source-IP
+# restricted to LAN_SUBNET, port DASHBOARD_PORT only). This box has a single
+# NIC serving both LAN and (via the router's own port-forwarding of just
+# the OpenVPN port) WAN-origin traffic, so a specific bind address was never
+# really a second security layer here -- it just meant the dashboard broke
+# every time the box's own LAN address changed. The firewall is the actual
+# boundary; nftables failing open is the scenario that matters, and no
+# amount of bind-address cleverness here protects against that.
 import html
 import io
 import ipaddress
@@ -775,21 +781,9 @@ def api_backup():
 def main():
     conf = load_config()
     port = int(conf.get("DASHBOARD_PORT", "8081"))
-    lan_ip = conf.get("DASHBOARD_LAN_IP", "127.0.0.1")
 
     threading.Thread(target=_sync_loop, daemon=True).start()
-
-    threads = [
-        threading.Thread(target=run_simple, args=("127.0.0.1", port, app), kwargs={"threaded": True}, daemon=True),
-    ]
-    if lan_ip != "127.0.0.1":
-        threads.append(
-            threading.Thread(target=run_simple, args=(lan_ip, port, app), kwargs={"threaded": True}, daemon=True)
-        )
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
+    run_simple("0.0.0.0", port, app, threaded=True)
 
 
 if __name__ == "__main__":

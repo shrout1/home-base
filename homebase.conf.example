@@ -31,11 +31,14 @@ GIST_TOKEN=""
 # current whitelist.
 SOURCE_URL=""
 
-# Dashboard: reachable from loopback and DASHBOARD_LAN_IP only, same
-# posture as pi5-router's own dashboard. Never bind this to the
-# internet-facing interface/IP.
+# Dashboard: binds to 0.0.0.0:DASHBOARD_PORT -- access control is enforced
+# by an nftables rule install.sh maintains (source IP must be within
+# DASHBOARD_ALLOWED_SUBNET), not by which address the app happens to bind
+# to. This is deliberately address-agnostic: it keeps working across DHCP
+# lease changes, static IP changes, whatever -- nftables is the actual
+# boundary either way.
 DASHBOARD_PORT="8081"
-DASHBOARD_LAN_IP="10.0.0.10"
+DASHBOARD_ALLOWED_SUBNET="10.0.0.0/16"
 
 # ---------------------------------------------------------------------------
 # OpenVPN -- only used if install.sh doesn't find an existing server
