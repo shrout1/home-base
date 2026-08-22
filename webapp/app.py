@@ -620,7 +620,7 @@ WIREGUARD_SERVER_PUBLIC_KEY = Path("/etc/wireguard/server_public.key")
 WIREGUARD_SERVER_PRIVATE_KEY = Path("/etc/wireguard/server_private.key")
 
 _WG_PEER_BLOCK_RE = re.compile(
-    r"(?:^# Name: (?P<name>.+)\n)?^\[Peer\]\n(?P<body>(?:^(?!\[).*\n?)*)",
+    r"(?:^# Name: (?P<name>.+)\n)?^\[Peer\]\n(?P<body>(?:^(?!\[|# Name: ).*\n?)*)",
     re.MULTILINE,
 )
 _WG_FIELD_RE = re.compile(r"^(\w+)\s*=\s*(.*)$", re.MULTILINE)
