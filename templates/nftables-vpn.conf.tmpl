@@ -1,9 +1,17 @@
-# Managed by home-base install.sh — only rendered when provisioning a fresh
-# OpenVPN server (no existing one detected). Loaded with `nft -f` as a set
-# of additive statements, NOT a full-ruleset file -- no `flush ruleset` here
-# on purpose. This must never destroy pre-existing rules on the box; it only
-# adds a new table by this name (a no-op if one already exists) and the
-# chains/rules below.
+# Managed by home-base install.sh — only rendered when provisioning on a
+# clean box (no existing OpenVPN server AND no existing NFT_SET detected).
+# Loaded with `nft -f` as a set of additive statements, NOT a full-ruleset
+# file -- no `flush ruleset` here on purpose. This must never destroy
+# pre-existing rules on the box; it only adds a new table by this name (a
+# no-op if one already exists) and the chains/rules below.
+#
+# VPN-agnostic skeleton only -- no OpenVPN- or WireGuard-specific rules here.
+# Each enabled VPN backend's own input-accept, forward-accept, and masquerade
+# rules are added separately by install.sh as idempotent `nft add rule`
+# steps (mirroring the dashboard-access-rule pattern), gated by
+# ENABLE_OPENVPN/ENABLE_WIREGUARD -- that's what lets either backend be
+# added or removed independently on a box that already has this skeleton,
+# not just at first-provision time.
 table __NFT_FAMILY__ __NFT_TABLE__ {
     set __NFT_SET__ {
         type ipv4_addr
@@ -15,14 +23,12 @@ table __NFT_FAMILY__ __NFT_TABLE__ {
         iifname "lo" accept
         ct state established,related accept
         ct state invalid drop
-        iifname "__WAN_IF__" __OPENVPN_PROTO__ dport __OPENVPN_PORT__ ip saddr @__NFT_SET__ accept
     }
 
     chain forward {
         type filter hook forward priority filter; policy drop;
         ct state established,related accept
         ct state invalid drop
-        iifname "tun0" oifname "__WAN_IF__" accept
     }
 
     chain output {
@@ -33,6 +39,5 @@ table __NFT_FAMILY__ __NFT_TABLE__ {
 table ip nat {
     chain postrouting {
         type nat hook postrouting priority srcnat; policy accept;
-        ip saddr __OPENVPN_SUBNET_CIDR__ oifname "__WAN_IF__" masquerade
     }
 }

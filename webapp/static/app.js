@@ -96,6 +96,19 @@ function renderChanges(data) {
     .join("");
 }
 
+let backendVisibilityInitialized = false;
+
+function updateBackendVisibility(data) {
+  // Only set once -- these are enable/disable toggles from homebase.conf,
+  // not something that flips during a normal running session.
+  if (backendVisibilityInitialized) return;
+  backendVisibilityInitialized = true;
+  document.getElementById("card-clients").hidden = !data.openvpn_enabled;
+  document.getElementById("card-active-clients").hidden = !data.openvpn_enabled;
+  document.getElementById("card-wg-clients").hidden = !data.wireguard_enabled;
+  document.getElementById("card-active-wg-clients").hidden = !data.wireguard_enabled;
+}
+
 async function poll() {
   const indicator = document.getElementById("refresh-indicator");
   try {
@@ -107,6 +120,7 @@ async function poll() {
     renderCurrent(data);
     renderChanges(data);
     prefillSourceForm(data);
+    updateBackendVisibility(data);
     indicator.classList.remove("stale");
   } catch (err) {
     indicator.classList.add("stale");
@@ -394,6 +408,149 @@ async function generateClient() {
 
 document.getElementById("generate-client").addEventListener("click", generateClient);
 
+// --- WireGuard peers ---------------------------------------------------
+
+function renderWgPeers(peers) {
+  const list = document.getElementById("wg-client-list");
+  if (!peers || !peers.length) {
+    list.className = "row-list empty";
+    list.innerHTML = "<li>none yet</li>";
+    return;
+  }
+  list.className = "row-list";
+  list.innerHTML = "";
+  for (const p of peers) {
+    const li = document.createElement("li");
+
+    const label = document.createElement("span");
+    label.textContent = `${p.name} (${p.allowed_ips})`;
+    li.appendChild(label);
+
+    const actions = document.createElement("span");
+    actions.className = "row-actions";
+
+    const deleteBtn = document.createElement("button");
+    deleteBtn.textContent = "Delete";
+    deleteBtn.className = "btn-warn";
+    deleteBtn.addEventListener("click", () => deleteWgPeer(p.name));
+    actions.appendChild(deleteBtn);
+
+    li.appendChild(actions);
+    list.appendChild(li);
+  }
+}
+
+async function loadWgPeers() {
+  try {
+    const res = await fetch("/api/wg-clients");
+    if (!res.ok) return;
+    renderWgPeers(await res.json());
+  } catch (err) {
+    // non-fatal -- next poll cycle retries
+  }
+}
+
+async function deleteWgPeer(name) {
+  if (!window.confirm(`Delete peer "${name}"? Their existing config will stop working immediately and can't be undone.`)) {
+    return;
+  }
+  const message = document.getElementById("wg-client-message");
+  message.textContent = `Removing "${name}"…`;
+  message.className = "message";
+  try {
+    const res = await fetch(`/api/wg-clients/${encodeURIComponent(name)}`, { method: "DELETE" });
+    const data = await res.json();
+    if (res.ok && data.status === "ok") {
+      message.textContent = `Removed "${name}".`;
+      message.className = "message ok";
+    } else {
+      message.textContent = data.message || "Failed to remove peer.";
+      message.className = "message error";
+    }
+  } catch (err) {
+    message.textContent = "Request failed.";
+    message.className = "message error";
+  } finally {
+    loadWgPeers();
+  }
+}
+
+async function generateWgPeer() {
+  const btn = document.getElementById("generate-wg-client");
+  const message = document.getElementById("wg-client-message");
+  const nameInput = document.getElementById("new-wg-client-name");
+  const name = nameInput.value.trim();
+
+  if (!name) {
+    message.textContent = "A name is required.";
+    message.className = "message error";
+    return;
+  }
+
+  btn.disabled = true;
+  message.textContent = "Generating…";
+  message.className = "message";
+  try {
+    const res = await fetch("/api/wg-clients", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    const data = await res.json();
+    if (res.ok && data.status === "ok") {
+      message.textContent = `Generated "${name}" -- downloading config now. Save it; the private key isn't kept server-side.`;
+      message.className = "message ok";
+      downloadText(`${name}.conf`, data.wg_config);
+      nameInput.value = "";
+      loadWgPeers();
+    } else {
+      message.textContent = data.message || "Failed to generate peer.";
+      message.className = "message error";
+    }
+  } catch (err) {
+    message.textContent = "Request failed.";
+    message.className = "message error";
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+document.getElementById("generate-wg-client").addEventListener("click", generateWgPeer);
+
+// --- Active WireGuard connections ---------------------------------------
+
+function renderActiveWgConnections(conns) {
+  const list = document.getElementById("active-wg-client-list");
+  if (!conns || !conns.length) {
+    list.className = "row-list empty";
+    list.innerHTML = "<li>nobody connected</li>";
+    return;
+  }
+  list.className = "row-list";
+  list.innerHTML = "";
+  for (const c of conns) {
+    const li = document.createElement("li");
+    const label = document.createElement("span");
+    label.textContent = `${c.name} — ${c.real_address || "unknown endpoint"}, last handshake ${fmtTime(c.connected_since)}`;
+    const meta = document.createElement("span");
+    meta.className = "row-meta";
+    meta.textContent = `${fmtBytes(c.bytes_received)} down / ${fmtBytes(c.bytes_sent)} up`;
+    li.appendChild(label);
+    li.appendChild(meta);
+    list.appendChild(li);
+  }
+}
+
+async function loadActiveWgConnections() {
+  try {
+    const res = await fetch("/api/wg-active-connections");
+    if (!res.ok) return;
+    renderActiveWgConnections(await res.json());
+  } catch (err) {
+    // non-fatal -- next poll cycle retries
+  }
+}
+
 // --- Backup ------------------------------------------------------------
 
 function downloadBackup() {
@@ -411,6 +568,10 @@ document.getElementById("download-backup").addEventListener("click", downloadBac
 poll();
 loadClients();
 loadActiveConnections();
+loadWgPeers();
+loadActiveWgConnections();
 setInterval(poll, POLL_MS);
 setInterval(loadClients, POLL_MS * 4);
 setInterval(loadActiveConnections, POLL_MS);
+setInterval(loadWgPeers, POLL_MS * 4);
+setInterval(loadActiveWgConnections, POLL_MS);

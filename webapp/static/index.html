@@ -100,6 +100,28 @@
     <p id="client-message" class="message"></p>
   </section>
 
+  <section class="card" id="card-active-wg-clients" hidden>
+    <h2>Active WireGuard Connections</h2>
+    <ul id="active-wg-client-list" class="pill-list empty">
+      <li>nobody connected</li>
+    </ul>
+  </section>
+
+  <section class="card" id="card-wg-clients" hidden>
+    <h2>WireGuard Peers</h2>
+    <ul id="wg-client-list" class="pill-list empty">
+      <li>none yet</li>
+    </ul>
+    <div class="clock-form">
+      <label>New peer name <input type="text" id="new-wg-client-name" placeholder="e.g. pi5-router"></label>
+    </div>
+    <button id="generate-wg-client">Generate peer &amp; download</button>
+    <p class="power-desc">Save the downloaded config now -- the private key is never
+      stored server-side, so this is the only chance to get it. Losing it means
+      deleting this peer and generating a new one.</p>
+    <p id="wg-client-message" class="message"></p>
+  </section>
+
   <section class="card" id="card-backup">
     <h2>Backup</h2>
     <p class="power-desc">

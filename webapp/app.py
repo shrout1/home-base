@@ -608,6 +608,223 @@ def revoke_vpn_client(conf, name):
 
 
 # ---------------------------------------------------------------------------
+# WireGuard peers -- no CA/PKI the way OpenVPN has one. Peers are identified
+# purely by their public key; there's no built-in name or expiry at all.
+# The human name gets stored as a "# Name: xyz" comment directly above each
+# peer's [Peer] block in wg0.conf -- parsed back out when listing, matching
+# how list_vpn_clients() above already parses easy-rsa's index.txt directly
+# rather than shelling out for a listing.
+# ---------------------------------------------------------------------------
+WIREGUARD_CONF = Path("/etc/wireguard/wg0.conf")
+WIREGUARD_SERVER_PUBLIC_KEY = Path("/etc/wireguard/server_public.key")
+WIREGUARD_SERVER_PRIVATE_KEY = Path("/etc/wireguard/server_private.key")
+
+_WG_PEER_BLOCK_RE = re.compile(
+    r"(?:^# Name: (?P<name>.+)\n)?^\[Peer\]\n(?P<body>(?:^(?!\[).*\n?)*)",
+    re.MULTILINE,
+)
+_WG_FIELD_RE = re.compile(r"^(\w+)\s*=\s*(.*)$", re.MULTILINE)
+
+
+class WireGuardError(Exception):
+    """WireGuard peer generation/listing/removal failed."""
+
+
+def _parse_wg_peers(text):
+    """Returns a list of dicts: name, public_key, allowed_ips, raw_block
+    (the exact text -- comment line plus [Peer]...fields -- so callers can
+    remove precisely this substring without reconstructing formatting)."""
+    peers = []
+    for m in _WG_PEER_BLOCK_RE.finditer(text):
+        body = m.group("body")
+        fields = dict(_WG_FIELD_RE.findall(body))
+        pubkey = fields.get("PublicKey")
+        if not pubkey:
+            continue
+        peers.append(
+            {
+                "name": m.group("name") or pubkey[:12],
+                "public_key": pubkey,
+                "allowed_ips": fields.get("AllowedIPs", ""),
+                "raw_block": m.group(0),
+            }
+        )
+    return peers
+
+
+def list_wireguard_peers(conf):
+    if not WIREGUARD_CONF.exists():
+        return []
+    peers = _parse_wg_peers(WIREGUARD_CONF.read_text())
+    return [{"name": p["name"], "allowed_ips": p["allowed_ips"]} for p in peers]
+
+
+def _next_wireguard_ip(conf, peers):
+    """First address in WIREGUARD_SUBNET not already the server's own or an
+    existing peer's -- .1 is always the server (see wireguard-server.conf.tmpl
+    rendering in install.sh, which assigns it the first host address)."""
+    subnet = conf.get("WIREGUARD_SUBNET", "10.9.0.0")
+    mask = conf.get("WIREGUARD_SUBNET_MASK", "255.255.255.0")
+    network = ipaddress.IPv4Network((subnet, mask))
+    used = {str(network[1])}  # server's own address
+    for p in peers:
+        ip = p["allowed_ips"].split("/", 1)[0].strip()
+        if ip:
+            used.add(ip)
+    for host in network.hosts():
+        if str(host) not in used:
+            return str(host)
+    raise WireGuardError(f"no free addresses left in {network}")
+
+
+def _wg_apply_live():
+    """Hot-reloads wg0 from the on-disk config without dropping other peers'
+    tunnels (unlike restarting wg-quick@wg0, which tears down and rebuilds
+    the whole interface). `wg-quick strip` resolves the config file's syntax
+    into the plain `wg setconf`-compatible form `wg syncconf` needs."""
+    strip = subprocess.run(
+        ["wg-quick", "strip", "wg0"], capture_output=True, text=True, timeout=10
+    )
+    if strip.returncode != 0:
+        raise WireGuardError(f"wg-quick strip failed: {strip.stderr.strip()}")
+    sync = subprocess.run(
+        ["wg", "syncconf", "wg0", "/dev/stdin"],
+        input=strip.stdout,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if sync.returncode != 0:
+        raise WireGuardError(f"wg syncconf failed: {sync.stderr.strip()}")
+
+
+def _build_wg_client_conf(conf, private_key, client_ip):
+    remote = conf.get("VPN_REMOTE_HOST", "")
+    if not remote:
+        raise WireGuardError("VPN_REMOTE_HOST isn't set in homebase.conf -- can't generate a usable client config without it")
+    port = conf.get("WIREGUARD_PORT", "51820")
+    if not WIREGUARD_SERVER_PUBLIC_KEY.exists():
+        raise WireGuardError(f"expected file missing: {WIREGUARD_SERVER_PUBLIC_KEY}")
+    server_pubkey = WIREGUARD_SERVER_PUBLIC_KEY.read_text().strip()
+
+    return f"""[Interface]
+PrivateKey = {private_key}
+Address = {client_ip}/32
+DNS = {conf.get("LAN_SUBNET", "10.0.0.0/24").split("/", 1)[0].rsplit(".", 1)[0]}.1
+
+[Peer]
+PublicKey = {server_pubkey}
+Endpoint = {remote}:{port}
+AllowedIPs = 0.0.0.0/0
+PersistentKeepalive = 25
+"""
+
+
+def generate_wireguard_peer(conf, name):
+    if not _valid_client_name(name):
+        return False, "Name must be 1-64 characters: letters, numbers, dots, dashes, underscores only.", None
+    if not WIREGUARD_CONF.exists():
+        return False, "No WireGuard config found at /etc/wireguard/wg0.conf -- is WireGuard set up yet?", None
+
+    peers = _parse_wg_peers(WIREGUARD_CONF.read_text())
+    if any(p["name"] == name for p in peers):
+        return False, f'A peer named "{name}" already exists.', None
+
+    try:
+        client_ip = _next_wireguard_ip(conf, peers)
+    except WireGuardError as e:
+        return False, str(e), None
+
+    keygen = subprocess.run(["wg", "genkey"], capture_output=True, text=True, timeout=10)
+    if keygen.returncode != 0:
+        return False, f"wg genkey failed: {keygen.stderr.strip()}", None
+    private_key = keygen.stdout.strip()
+    pubgen = subprocess.run(
+        ["wg", "pubkey"], input=private_key, capture_output=True, text=True, timeout=10
+    )
+    if pubgen.returncode != 0:
+        return False, f"wg pubkey failed: {pubgen.stderr.strip()}", None
+    public_key = pubgen.stdout.strip()
+
+    block = f"# Name: {name}\n[Peer]\nPublicKey = {public_key}\nAllowedIPs = {client_ip}/32\n"
+    with WIREGUARD_CONF.open("a") as f:
+        f.write(("\n" if not WIREGUARD_CONF.read_text().endswith("\n\n") else "") + block)
+
+    try:
+        _wg_apply_live()
+    except WireGuardError as e:
+        return False, f"peer added to config, but couldn't apply live: {e}", None
+
+    try:
+        client_conf = _build_wg_client_conf(conf, private_key, client_ip)
+    except WireGuardError as e:
+        return False, f"peer was added, but bundling the client config failed: {e}", None
+
+    return True, None, client_conf
+
+
+def revoke_wireguard_peer(conf, name):
+    """WireGuard has no CRL -- this is a plain deletion (remove the [Peer]
+    block, drop the live peer), not a real revocation with anything held
+    server-side the way OpenVPN's cert revocation is."""
+    if not _valid_client_name(name):
+        return False, "invalid name"
+    if not WIREGUARD_CONF.exists():
+        return False, "No WireGuard config found."
+
+    text = WIREGUARD_CONF.read_text()
+    peers = _parse_wg_peers(text)
+    match = next((p for p in peers if p["name"] == name), None)
+    if not match:
+        return False, f'No peer named "{name}" found.'
+
+    new_text = text.replace(match["raw_block"], "", 1)
+    WIREGUARD_CONF.write_text(new_text)
+
+    try:
+        _wg_apply_live()
+    except WireGuardError as e:
+        return False, f"removed from config, but couldn't apply live: {e}"
+    return True, None
+
+
+def get_active_wireguard_connections():
+    """`wg show wg0 dump` is tab-separated, one line per peer:
+    pubkey  preshared-key  endpoint  allowed-ips  latest-handshake  rx  tx  keepalive
+    (the first line, the interface's own private key, is skipped)."""
+    if not WIREGUARD_CONF.exists():
+        return []
+    result = subprocess.run(
+        ["wg", "show", "wg0", "dump"], capture_output=True, text=True, timeout=10
+    )
+    if result.returncode != 0:
+        return []
+
+    names_by_key = {p["public_key"]: p["name"] for p in _parse_wg_peers(WIREGUARD_CONF.read_text())}
+    connections = []
+    lines = result.stdout.strip().splitlines()[1:]  # skip interface line
+    for line in lines:
+        fields = line.split("\t")
+        if len(fields) < 8:
+            continue
+        pubkey, _psk, endpoint, allowed_ips, handshake, rx, tx, _keepalive = fields[:8]
+        handshake_ts = int(handshake) if handshake.isdigit() else 0
+        if handshake_ts == 0:
+            continue  # never handshaked -- not a "connection" worth showing
+        connections.append(
+            {
+                "name": names_by_key.get(pubkey, pubkey[:12]),
+                "real_address": endpoint or None,
+                "virtual_address": allowed_ips,
+                "bytes_received": int(rx) if rx.isdigit() else None,
+                "bytes_sent": int(tx) if tx.isdigit() else None,
+                "connected_since": datetime.fromtimestamp(handshake_ts, tz=timezone.utc).isoformat(),
+            }
+        )
+    return connections
+
+
+# ---------------------------------------------------------------------------
 # Live connections -- distinct from the certificate list above. OpenVPN's
 # own --status file (version 2, CSV) is the only source of truth for who is
 # actually connected right now; a "valid" cert says nothing about that.
@@ -652,6 +869,9 @@ _BACKUP_PATHS = [
     OPENVPN_SERVER_DIR / "server.crt",
     OPENVPN_SERVER_DIR / "server.key",
     OPENVPN_SERVER_DIR / "tc.key",
+    WIREGUARD_CONF,
+    WIREGUARD_SERVER_PRIVATE_KEY,
+    WIREGUARD_SERVER_PUBLIC_KEY,
     Path("/etc/home-base/homebase.conf"),
 ]
 
@@ -694,6 +914,8 @@ def api_status():
                 "set": conf.get("NFT_SET", "vpn_allowed"),
             },
             "poll_interval_seconds": int(conf.get("POLL_INTERVAL_SECONDS", "120")),
+            "openvpn_enabled": conf.get("ENABLE_OPENVPN", "true") == "true",
+            "wireguard_enabled": conf.get("ENABLE_WIREGUARD", "false") == "true",
             **state,
         }
     )
@@ -763,6 +985,38 @@ def api_vpn_clients_revoke(name):
 @app.route("/api/active-connections")
 def api_active_connections():
     return jsonify(get_active_vpn_connections())
+
+
+@app.route("/api/wg-clients")
+def api_wg_clients():
+    conf = load_config()
+    return jsonify(list_wireguard_peers(conf))
+
+
+@app.route("/api/wg-clients", methods=["POST"])
+def api_wg_clients_create():
+    conf = load_config()
+    payload = request.get_json(silent=True) or {}
+    name = (payload.get("name") or "").strip()
+
+    ok, message, client_conf = generate_wireguard_peer(conf, name)
+    if not ok:
+        return jsonify({"status": "error", "message": message}), 400
+    return jsonify({"status": "ok", "name": name, "wg_config": client_conf})
+
+
+@app.route("/api/wg-clients/<name>", methods=["DELETE"])
+def api_wg_clients_revoke(name):
+    conf = load_config()
+    ok, message = revoke_wireguard_peer(conf, name)
+    if not ok:
+        return jsonify({"status": "error", "message": message}), 400
+    return jsonify({"status": "ok"})
+
+
+@app.route("/api/wg-active-connections")
+def api_wg_active_connections():
+    return jsonify(get_active_wireguard_connections())
 
 
 @app.route("/api/backup")

@@ -41,6 +41,14 @@ DASHBOARD_PORT="8081"
 DASHBOARD_ALLOWED_SUBNET="10.0.0.0/16"
 
 # ---------------------------------------------------------------------------
+# Which VPN backend(s) to run -- either, or both. Both are gated by the same
+# NFT_SET whitelist above: one whitelist doc, kept in sync from wherever
+# you're traveling, covers whichever VPN(s) you're actually using.
+# ---------------------------------------------------------------------------
+ENABLE_OPENVPN="true"
+ENABLE_WIREGUARD="false"
+
+# ---------------------------------------------------------------------------
 # OpenVPN -- only used if install.sh doesn't find an existing server
 # (systemd unit openvpn-server@server, or /etc/openvpn/server/server.conf).
 # An existing one is adopted and never modified. These settings, and the
@@ -66,6 +74,18 @@ EASYRSA_REQ_CN="home-base-CA"
 # set it yourself (prefer a DDNS hostname over a raw IP -- residential IPs
 # change).
 VPN_REMOTE_HOST=""
+
+# ---------------------------------------------------------------------------
+# WireGuard -- only used if ENABLE_WIREGUARD=true. Same adopt-vs-provision
+# split as OpenVPN above (existing /etc/wireguard/wg0.conf is adopted and
+# never modified). Peers have no CA/PKI -- they're managed entirely from the
+# dashboard's WireGuard Peers card (keypair generated there, never from
+# install.sh). VPN_REMOTE_HOST above is reused for WireGuard clients too --
+# one remote host, whichever VPN(s) are enabled.
+# ---------------------------------------------------------------------------
+WIREGUARD_PORT="51820"
+WIREGUARD_SUBNET="10.9.0.0"
+WIREGUARD_SUBNET_MASK="255.255.255.0"
 
 # ---------------------------------------------------------------------------
 # DDNS -- No-IP only for now (noip-duc). An existing installation is

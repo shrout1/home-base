@@ -1,0 +1,12 @@
+# Managed by home-base install.sh — only rendered when provisioning a fresh
+# WireGuard server (no existing /etc/wireguard/wg0.conf detected). An
+# adopted existing config is never touched.
+#
+# No [Peer] blocks here -- those are added by the dashboard's WireGuard
+# Peers card (webapp/app.py's generate_wireguard_peer()), which appends a
+# "# Name: <label>" comment plus a [Peer] section per peer and hot-reloads
+# via `wg syncconf`, without needing wg-quick to restart the interface.
+[Interface]
+Address = __WIREGUARD_SERVER_ADDR__/__WIREGUARD_PREFIXLEN__
+ListenPort = __WIREGUARD_PORT__
+PrivateKey = __WIREGUARD_SERVER_PRIVATE_KEY__

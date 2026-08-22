@@ -2,15 +2,19 @@
 #
 # home-base installer.
 #
-# Keeps an existing nftables set in sync with an IP whitelist read from an
-# external, admin-editable source (a GitHub gist or any URL that answers a
-# plain GET with whitelist text), so a VPN server's access whitelist can be
-# updated from wherever you're traveling without SSHing in by hand.
+# Keeps an nftables set in sync with an IP whitelist read from an external,
+# admin-editable source (a GitHub gist or any URL that answers a plain GET
+# with whitelist text), so a VPN server's access whitelist can be updated
+# from wherever you're traveling without SSHing in by hand. Runs OpenVPN,
+# WireGuard, or both (ENABLE_OPENVPN / ENABLE_WIREGUARD in homebase.conf) --
+# whichever backend(s) are enabled share the same whitelist-gated set.
 #
-# home-base does NOT create or own a firewall ruleset -- the target
-# nftables set has to already exist (as part of whatever firewall setup
-# your VPN server already has). This only manages that one set's element
-# membership.
+# home-base does NOT create or own a general firewall ruleset -- if the
+# nftables set/base chains already exist (as part of whatever firewall setup
+# the box already has), they're adopted as-is. This only manages that one
+# set's element membership, plus the specific accept rules each enabled VPN
+# backend needs, added additively without touching anything else already
+# on the box.
 #
 # Safe to re-run: every step either checks before creating, or overwrites a
 # file this script owns outright.
@@ -44,6 +48,15 @@ for v in NFT_FAMILY NFT_TABLE NFT_SET POLL_INTERVAL_SECONDS SOURCE_TYPE \
          OPENVPN_SUBNET OPENVPN_SUBNET_MASK LAN_SUBNET EASYRSA_REQ_CN; do
     [[ -n "${!v:-}" ]] || die "config variable $v is not set"
 done
+
+# Both default on/off exactly as they always implicitly were before these
+# existed (OpenVPN on, nothing else) -- not in the required-var loop above,
+# so a homebase.conf from before WireGuard support keeps working unchanged.
+ENABLE_OPENVPN="${ENABLE_OPENVPN:-true}"
+ENABLE_WIREGUARD="${ENABLE_WIREGUARD:-false}"
+WIREGUARD_PORT="${WIREGUARD_PORT:-51820}"
+WIREGUARD_SUBNET="${WIREGUARD_SUBNET:-10.9.0.0}"
+WIREGUARD_SUBNET_MASK="${WIREGUARD_SUBNET_MASK:-255.255.255.0}"
 
 case "$SOURCE_TYPE" in
     github_gist)
@@ -87,27 +100,85 @@ render() {
 log "installing packages"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y python3-flask openvpn easy-rsa
+PACKAGES=(python3-flask)
+[[ "$ENABLE_OPENVPN" == "true" ]] && PACKAGES+=(openvpn easy-rsa)
+[[ "$ENABLE_WIREGUARD" == "true" ]] && PACKAGES+=(wireguard)
+apt-get install -y "${PACKAGES[@]}"
+
+WAN_IF="$(ip route show default | awk '/default/ {for (i=1;i<=NF;i++) if ($i=="dev") print $(i+1); exit}')"
+[[ -n "$WAN_IF" ]] || die "could not detect a default-route (internet-facing) interface"
+log "internet-facing interface: $WAN_IF"
+
+# Helpers for the idempotent rule-adding steps below (3b/3d/3f) -- checks
+# before adding, and tracks whether anything actually changed so the
+# `/etc/nftables.conf` persist step only runs once at the end, not once per
+# rule.
+NFT_RULESET_CHANGED=0
+ensure_nft_rule() {
+    # ensure_nft_rule <chain> <grep-pattern> <rule...>
+    local chain="$1" pattern="$2"
+    shift 2
+    if nft list chain "$NFT_FAMILY" "$NFT_TABLE" "$chain" 2>/dev/null | grep -q "$pattern"; then
+        log "  $chain rule already present ($pattern) -- leaving it as-is"
+        return 0
+    fi
+    nft add rule "$NFT_FAMILY" "$NFT_TABLE" "$chain" "$@"
+    log "  added to $chain: $*"
+    NFT_RULESET_CHANGED=1
+}
+ensure_nat_rule() {
+    # ensure_nat_rule <grep-pattern> <rule...>
+    local pattern="$1"
+    shift
+    if nft list chain ip nat postrouting 2>/dev/null | grep -q "$pattern"; then
+        log "  nat postrouting rule already present ($pattern) -- leaving it as-is"
+        return 0
+    fi
+    nft add rule ip nat postrouting "$@"
+    log "  added to nat postrouting: $*"
+    NFT_RULESET_CHANGED=1
+}
 
 # ---------------------------------------------------------------------------
-# 3. OpenVPN + the nftables scaffolding around it -- adopt if it already
-#    exists, provision from scratch on a clean box. These two are handled
-#    as one bundle: a whitelist-gated set with nothing to gate is pointless,
-#    and an OpenVPN server with no whitelist gating it is the opposite of
-#    what this project is for.
+# 3. Base nftables skeleton (table/set/chains) -- shared by whichever VPN
+#    backend(s) are enabled below. Adopt if it already exists, provision
+#    fresh otherwise. Deliberately independent of ENABLE_OPENVPN/
+#    ENABLE_WIREGUARD: NFT_SET is the shared whitelist target regardless of
+#    which VPN(s) actually use it, so its existence no longer implies "and
+#    OpenVPN must exist too" the way it did when this only supported one
+#    backend.
 # ---------------------------------------------------------------------------
-OPENVPN_SERVER_EXISTS=0
-[[ -f /etc/openvpn/server/server.conf ]] && OPENVPN_SERVER_EXISTS=1
 NFT_SET_EXISTS=0
 nft list set "$NFT_FAMILY" "$NFT_TABLE" "$NFT_SET" >/dev/null 2>&1 && NFT_SET_EXISTS=1
 
-if [[ "$OPENVPN_SERVER_EXISTS" -eq 1 && "$NFT_SET_EXISTS" -eq 1 ]]; then
-    log "existing OpenVPN server and $NFT_FAMILY $NFT_TABLE $NFT_SET both found -- adopting, not touching either"
-elif [[ "$OPENVPN_SERVER_EXISTS" -eq 1 || "$NFT_SET_EXISTS" -eq 1 ]]; then
-    die "found one of {OpenVPN server, nftables set $NFT_SET} but not the other --
-      that's an inconsistent state this installer won't guess how to reconcile.
-      OpenVPN server present: $OPENVPN_SERVER_EXISTS ; nftables set present: $NFT_SET_EXISTS
-      Sort out the missing half by hand, then re-run."
+if [[ "$NFT_SET_EXISTS" -eq 1 ]]; then
+    log "existing $NFT_FAMILY $NFT_TABLE $NFT_SET found -- adopting, not touching the base ruleset"
+else
+    log "no existing $NFT_FAMILY $NFT_TABLE $NFT_SET -- provisioning the base nftables skeleton"
+    TMP_NFT="$(mktemp)"
+    content="$(cat "$SCRIPT_DIR/templates/nftables-vpn.conf.tmpl")"
+    for kv in "NFT_FAMILY=$NFT_FAMILY" "NFT_TABLE=$NFT_TABLE" "NFT_SET=$NFT_SET"; do
+        key="${kv%%=*}"; val="${kv#*=}"
+        content="${content//__${key}__/$val}"
+    done
+    printf '%s\n' "$content" > "$TMP_NFT"
+    nft -f "$TMP_NFT"
+    rm -f "$TMP_NFT"
+    systemctl enable nftables >/dev/null 2>&1 || true
+fi
+
+# ---------------------------------------------------------------------------
+# 3a. OpenVPN -- adopt if it already exists, provision from scratch
+#     otherwise. No nftables rules here anymore (see 3b) -- this step is
+#     purely the PKI/server-config/systemd side.
+# ---------------------------------------------------------------------------
+OPENVPN_SERVER_EXISTS=0
+[[ -f /etc/openvpn/server/server.conf ]] && OPENVPN_SERVER_EXISTS=1
+
+if [[ "$ENABLE_OPENVPN" != "true" ]]; then
+    log "ENABLE_OPENVPN=false -- skipping OpenVPN"
+elif [[ "$OPENVPN_SERVER_EXISTS" -eq 1 ]]; then
+    log "existing OpenVPN server found -- adopting, not touching it"
 else
     log "no existing OpenVPN server found -- provisioning one from scratch"
 
@@ -124,16 +195,8 @@ else
       /etc/openvpn/easy-rsa/pki by hand and re-run this installer."
     fi
 
-    WAN_IF="$(ip route show default | awk '/default/ {for (i=1;i<=NF;i++) if ($i=="dev") print $(i+1); exit}')"
-    [[ -n "$WAN_IF" ]] || die "could not detect a default-route (internet-facing) interface to bind OpenVPN/nftables to"
-    log "  internet-facing interface: $WAN_IF"
-
     LAN_NETWORK="${LAN_SUBNET%/*}"
     LAN_NETMASK="$(python3 -c "import ipaddress; print(ipaddress.IPv4Network('$LAN_SUBNET').netmask)")"
-    OPENVPN_SUBNET_CIDR="$(python3 -c "
-import ipaddress
-print(ipaddress.IPv4Network(('$OPENVPN_SUBNET', '$OPENVPN_SUBNET_MASK')))
-")"
 
     log "  setting up easy-rsa PKI at /etc/openvpn/easy-rsa"
     mkdir -p /etc/openvpn/easy-rsa
@@ -180,53 +243,107 @@ EOF
         "LAN_NETMASK=$LAN_NETMASK"
     mkdir -p /var/log/openvpn
 
-    log "  installing nftables scaffolding (table $NFT_FAMILY $NFT_TABLE, set $NFT_SET)"
-    TMP_NFT="$(mktemp)"
-    content="$(cat "$SCRIPT_DIR/templates/nftables-vpn.conf.tmpl")"
-    for kv in "NFT_FAMILY=$NFT_FAMILY" "NFT_TABLE=$NFT_TABLE" "NFT_SET=$NFT_SET" \
-              "WAN_IF=$WAN_IF" "OPENVPN_PROTO=$OPENVPN_PROTO" "OPENVPN_PORT=$OPENVPN_PORT" \
-              "OPENVPN_SUBNET_CIDR=$OPENVPN_SUBNET_CIDR"; do
-        key="${kv%%=*}"; val="${kv#*=}"
-        content="${content//__${key}__/$val}"
-    done
-    printf '%s\n' "$content" > "$TMP_NFT"
-    nft -f "$TMP_NFT"
-    rm -f "$TMP_NFT"
-    systemctl enable nftables >/dev/null 2>&1 || true
-
     systemctl daemon-reload
     systemctl enable openvpn-server@server >/dev/null
     systemctl restart openvpn-server@server
 fi
 
 # ---------------------------------------------------------------------------
-# 3b. Dashboard access rule -- runs every time (fresh provision or adopted
-#     box alike), unlike the VPN scaffolding above. The dashboard binds to
+# 3b. OpenVPN nftables rules -- additive and idempotent, runs every time
+#     (fresh provision or adopted box alike), gated only by ENABLE_OPENVPN.
+#     This, not step 3a, is what makes OpenVPN's whitelist gating apply
+#     whether OpenVPN itself was just provisioned above or was already
+#     sitting there from before this installer supported multiple backends.
+# ---------------------------------------------------------------------------
+if [[ "$ENABLE_OPENVPN" == "true" ]]; then
+    log "ensuring nftables rules for OpenVPN"
+    OPENVPN_SUBNET_CIDR="$(python3 -c "
+import ipaddress
+print(ipaddress.IPv4Network(('$OPENVPN_SUBNET', '$OPENVPN_SUBNET_MASK')))
+")"
+    ensure_nft_rule input "dport $OPENVPN_PORT .*ip saddr @$NFT_SET" \
+        iifname "$WAN_IF" "$OPENVPN_PROTO" dport "$OPENVPN_PORT" ip saddr "@$NFT_SET" accept
+    ensure_nft_rule forward "iifname \"tun0\" oifname \"$WAN_IF\"" \
+        iifname tun0 oifname "$WAN_IF" accept
+    ensure_nat_rule "ip saddr $OPENVPN_SUBNET_CIDR" \
+        ip saddr "$OPENVPN_SUBNET_CIDR" oifname "$WAN_IF" masquerade
+fi
+
+# ---------------------------------------------------------------------------
+# 3c. WireGuard -- adopt if it already exists, provision from scratch
+#     otherwise. No CA/PKI (unlike OpenVPN) -- just a server keypair and an
+#     [Interface] block; peers are added later from the dashboard.
+# ---------------------------------------------------------------------------
+WIREGUARD_EXISTS=0
+[[ -f /etc/wireguard/wg0.conf ]] && WIREGUARD_EXISTS=1
+
+if [[ "$ENABLE_WIREGUARD" != "true" ]]; then
+    log "ENABLE_WIREGUARD=false -- skipping WireGuard"
+elif [[ "$WIREGUARD_EXISTS" -eq 1 ]]; then
+    log "existing WireGuard config found -- adopting, not touching it"
+else
+    log "no existing WireGuard config found -- provisioning one from scratch"
+    read -r WIREGUARD_SERVER_ADDR WIREGUARD_PREFIXLEN <<<"$(python3 -c "
+import ipaddress
+net = ipaddress.IPv4Network(('$WIREGUARD_SUBNET', '$WIREGUARD_SUBNET_MASK'))
+print(next(net.hosts()), net.prefixlen)
+")"
+
+    install -d -m 0700 /etc/wireguard
+    umask 077
+    wg genkey > /etc/wireguard/server_private.key
+    wg pubkey < /etc/wireguard/server_private.key > /etc/wireguard/server_public.key
+    umask 022
+    chmod 600 /etc/wireguard/server_private.key
+
+    render "$SCRIPT_DIR/templates/wireguard-server.conf.tmpl" /etc/wireguard/wg0.conf \
+        "WIREGUARD_SERVER_ADDR=$WIREGUARD_SERVER_ADDR" \
+        "WIREGUARD_PREFIXLEN=$WIREGUARD_PREFIXLEN" \
+        "WIREGUARD_PORT=$WIREGUARD_PORT" \
+        "WIREGUARD_SERVER_PRIVATE_KEY=$(cat /etc/wireguard/server_private.key)"
+    chmod 600 /etc/wireguard/wg0.conf
+
+    systemctl enable --now wg-quick@wg0 >/dev/null
+fi
+
+# ---------------------------------------------------------------------------
+# 3d. WireGuard nftables rules -- additive and idempotent, same pattern and
+#     same reasoning as 3b.
+# ---------------------------------------------------------------------------
+if [[ "$ENABLE_WIREGUARD" == "true" ]]; then
+    log "ensuring nftables rules for WireGuard"
+    WIREGUARD_SUBNET_CIDR="$(python3 -c "
+import ipaddress
+print(ipaddress.IPv4Network(('$WIREGUARD_SUBNET', '$WIREGUARD_SUBNET_MASK')))
+")"
+    ensure_nft_rule input "dport $WIREGUARD_PORT .*ip saddr @$NFT_SET" \
+        iifname "$WAN_IF" udp dport "$WIREGUARD_PORT" ip saddr "@$NFT_SET" accept
+    ensure_nft_rule forward "iifname \"wg0\" oifname \"$WAN_IF\"" \
+        iifname wg0 oifname "$WAN_IF" accept
+    ensure_nat_rule "ip saddr $WIREGUARD_SUBNET_CIDR" \
+        ip saddr "$WIREGUARD_SUBNET_CIDR" oifname "$WAN_IF" masquerade
+fi
+
+# ---------------------------------------------------------------------------
+# 3e. Dashboard access rule -- runs every time regardless of which VPN
+#     backend(s) are enabled, unlike 3b/3d above. The dashboard binds to
 #     0.0.0.0 (see webapp/app.py); this rule is the only thing standing
 #     between that and the open internet, so it isn't optional the way the
-#     rest of this installer's "adopt, don't touch" posture is. Idempotent:
-#     checks for an existing matching rule before adding another.
+#     rest of this installer's "adopt, don't touch" posture is.
 # ---------------------------------------------------------------------------
 log "ensuring an nftables rule allows dashboard access from $DASHBOARD_ALLOWED_SUBNET"
-WAN_IF="${WAN_IF:-$(ip route show default | awk '/default/ {for (i=1;i<=NF;i++) if ($i=="dev") print $(i+1); exit}')}"
-[[ -n "$WAN_IF" ]] || die "could not detect the interface to scope the dashboard nftables rule to"
+ensure_nft_rule input "dport $DASHBOARD_PORT .*ip saddr $DASHBOARD_ALLOWED_SUBNET" \
+    iifname "$WAN_IF" tcp dport "$DASHBOARD_PORT" ip saddr "$DASHBOARD_ALLOWED_SUBNET" accept
 
-if nft list chain "$NFT_FAMILY" "$NFT_TABLE" input 2>/dev/null \
-        | grep -q "dport $DASHBOARD_PORT .*ip saddr $DASHBOARD_ALLOWED_SUBNET"; then
-    log "  rule already present -- leaving it as-is"
-else
-    nft add rule "$NFT_FAMILY" "$NFT_TABLE" input \
-        iifname "$WAN_IF" tcp dport "$DASHBOARD_PORT" ip saddr "$DASHBOARD_ALLOWED_SUBNET" accept
-    log "  added: accept tcp dport $DASHBOARD_PORT from $DASHBOARD_ALLOWED_SUBNET on $WAN_IF"
-    # /etc/nftables.conf (loaded by nftables.service at boot) is a separate
-    # file from the live ruleset `nft add` just changed -- snapshot the live
-    # ruleset (now including this rule) so it survives a reboot.
-    {
-        echo '#!/usr/sbin/nft -f'
-        echo 'flush ruleset'
-        nft list ruleset
-    } > /etc/nftables.conf
-    log "  persisted to /etc/nftables.conf"
+# ---------------------------------------------------------------------------
+# 3f. Persist the live ruleset if 3b/3d/3e actually changed anything.
+#     /etc/nftables.conf (loaded by nftables.service at boot) is a separate
+#     file from the live ruleset `nft add` changes -- a snapshot here is
+#     what makes any of the above survive a reboot.
+# ---------------------------------------------------------------------------
+if [[ "$NFT_RULESET_CHANGED" -eq 1 ]]; then
+    { echo '#!/usr/sbin/nft -f'; echo 'flush ruleset'; nft list ruleset; } > /etc/nftables.conf
+    log "persisted nftables ruleset to /etc/nftables.conf"
 fi
 
 # ---------------------------------------------------------------------------
@@ -310,14 +427,16 @@ cat <<EOF
 ==================================================================
 home-base setup complete.
 
-  OpenVPN        : $([[ "$OPENVPN_SERVER_EXISTS" -eq 1 ]] && echo "existing server adopted" || echo "provisioned fresh on $OPENVPN_PORT/$OPENVPN_PROTO")
+  OpenVPN        : $([[ "$ENABLE_OPENVPN" != "true" ]] && echo "disabled" || { [[ "$OPENVPN_SERVER_EXISTS" -eq 1 ]] && echo "existing server adopted" || echo "provisioned fresh on $OPENVPN_PORT/$OPENVPN_PROTO"; })
+  WireGuard      : $([[ "$ENABLE_WIREGUARD" != "true" ]] && echo "disabled" || { [[ "$WIREGUARD_EXISTS" -eq 1 ]] && echo "existing config adopted" || echo "provisioned fresh on $WIREGUARD_PORT/udp"; })
   Syncing        : $NFT_FAMILY $NFT_TABLE $NFT_SET, every ${POLL_INTERVAL_SECONDS}s
   Source         : $SOURCE_TYPE
   Dashboard      : http://<this box's address>:${DASHBOARD_PORT}
                     (nftables restricts access to $DASHBOARD_ALLOWED_SUBNET)
 
 Edit /etc/home-base/homebase.conf and \`systemctl restart home-base\` to change source
-settings, the poll interval, or which nftables set gets synced. Generate client certs
-from the dashboard's Clients card.
+settings, the poll interval, or which nftables set gets synced. Generate OpenVPN
+client certs from the dashboard's Client Certificates card, WireGuard peers from
+its WireGuard Peers card.
 ==================================================================
 EOF
