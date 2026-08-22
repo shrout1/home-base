@@ -109,6 +109,32 @@ WAN_IF="$(ip route show default | awk '/default/ {for (i=1;i<=NF;i++) if ($i=="d
 [[ -n "$WAN_IF" ]] || die "could not detect a default-route (internet-facing) interface"
 log "internet-facing interface: $WAN_IF"
 
+# ---------------------------------------------------------------------------
+# IP forwarding -- required for the kernel to route packets between
+# interfaces at all (tun0/wg0 <-> WAN_IF), independent of and in addition to
+# the nftables forward-chain rules below. Without this, a client can
+# complete a handshake/connect and reach the box itself fine, but anything
+# meant to transit through it (full-tunnel internet, or a route to the LAN)
+# silently goes nowhere -- nftables' forward hook is never even consulted
+# if the kernel isn't forwarding at all. OpenVPN's own config here only
+# ever pushes a specific LAN route, never a full-tunnel redirect-gateway,
+# which is how this went unnoticed until a WireGuard peer using
+# AllowedIPs=0.0.0.0/0 (full tunnel) actually exercised it.
+# ---------------------------------------------------------------------------
+if [[ "$ENABLE_OPENVPN" == "true" || "$ENABLE_WIREGUARD" == "true" ]]; then
+    if [[ "$(cat /proc/sys/net/ipv4/ip_forward)" != "1" ]]; then
+        echo 1 > /proc/sys/net/ipv4/ip_forward
+        log "enabled IP forwarding (was off)"
+    else
+        log "IP forwarding already enabled"
+    fi
+    SYSCTL_FORWARD_FILE=/etc/sysctl.d/99-home-base-forwarding.conf
+    if [[ ! -f "$SYSCTL_FORWARD_FILE" ]] || ! grep -q '^net.ipv4.ip_forward=1$' "$SYSCTL_FORWARD_FILE"; then
+        echo 'net.ipv4.ip_forward=1' > "$SYSCTL_FORWARD_FILE"
+        log "  persisted to $SYSCTL_FORWARD_FILE (survives reboot)"
+    fi
+fi
+
 # Helpers for the idempotent rule-adding steps below (3b/3d/3f) -- checks
 # before adding, and tracks whether anything actually changed so the
 # `/etc/nftables.conf` persist step only runs once at the end, not once per
