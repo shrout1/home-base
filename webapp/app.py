@@ -204,9 +204,19 @@ def parse_whitelist(text):
     produces for existing nft elements, so the two sets are directly
     comparable. warnings lists lines that didn't parse, so a typo in the
     whitelist doc surfaces on the dashboard instead of being silently
-    dropped from the sync."""
+    dropped from the sync.
+
+    Also collapses any entry fully covered by a broader range also present
+    (e.g. a specific IP alongside the /16 it already falls within) down to
+    just the broader range, with a warning identifying what got folded in.
+    nftables' interval sets flatly refuse to hold two overlapping elements
+    at once, so doing this at parse time keeps the desired state internally
+    consistent before it's ever compared against the live set -- rather
+    than only handling it reactively when applying a diff."""
     text = _html_to_text(text)
-    entries = set()
+    # display string (exact form used elsewhere/in nftables) -> network
+    # object (a bare IP becomes a /32 here, only for overlap checking).
+    entries_by_display = {}
     warnings = []
     for lineno, raw_line in enumerate(text.splitlines(), start=1):
         line = raw_line.split("#", 1)[0].strip()
@@ -215,12 +225,43 @@ def parse_whitelist(text):
         try:
             if "/" in line:
                 net = ipaddress.IPv4Network(line, strict=False)
-                entries.add(str(net))
+                display = str(net)
             else:
-                entries.add(str(ipaddress.IPv4Address(line)))
+                addr = ipaddress.IPv4Address(line)
+                net = ipaddress.IPv4Network(f"{addr}/32")
+                display = str(addr)
         except ValueError:
             warnings.append(f"line {lineno}: {raw_line.strip()!r} is not a valid IPv4 address or CIDR block")
-    return entries, warnings
+            continue
+        entries_by_display[display] = net
+
+    items = list(entries_by_display.items())
+    redundant = {}
+    for display, net in items:
+        for other_display, other_net in items:
+            if display == other_display:
+                continue
+            if other_net.prefixlen < net.prefixlen and net.subnet_of(other_net):
+                redundant[display] = other_display
+                break
+    for narrow, covering in redundant.items():
+        del entries_by_display[narrow]
+        warnings.append(f"{narrow!r} is already covered by {covering!r} -- using the broader range only")
+
+    # A leftover overlap here means two ranges cross without either fully
+    # containing the other (e.g. misaligned/adjacent blocks) -- rare, but
+    # nftables would still reject it, so surface it now instead of letting
+    # the eventual `nft add element` fail with a low-level error.
+    remaining = list(entries_by_display.items())
+    for i, (display, net) in enumerate(remaining):
+        for other_display, other_net in remaining[i + 1 :]:
+            if net.overlaps(other_net):
+                warnings.append(
+                    f"{display!r} and {other_display!r} overlap but neither fully contains the "
+                    "other -- remove or adjust one of them"
+                )
+
+    return set(entries_by_display.keys()), warnings
 
 
 # ---------------------------------------------------------------------------
@@ -251,13 +292,32 @@ def get_current_elements(family, table, set_name):
     return elements
 
 
+def _networks_overlap(a, b):
+    return ipaddress.ip_network(a, strict=False).overlaps(ipaddress.ip_network(b, strict=False))
+
+
 def apply_diff(family, table, set_name, current, desired):
     """Adds/removes only the difference -- never flushes -- so the set is
     never briefly empty. Adds happen before removes, so a same-cycle
     replace (new IP in, old IP out) never has a window where neither is
-    present."""
+    present -- except for a removed element whose address space overlaps
+    one being added (e.g. replacing several specific IPs with a covering
+    CIDR range, like consolidating a mobile carrier's rotating addresses
+    into its whole NAT pool). nftables' interval sets flatly refuse to add
+    an element that overlaps one already present, so that specific overlap
+    has to be cleared first -- a brief, unavoidable gap for just that
+    address space, traded for the add not failing outright."""
     to_add = sorted(desired - current)
     to_remove = sorted(current - desired)
+
+    overlapping_removes = [r for r in to_remove if any(_networks_overlap(r, a) for a in to_add)]
+    remaining_removes = [r for r in to_remove if r not in overlapping_removes]
+
+    if overlapping_removes:
+        elements = "{ " + ", ".join(overlapping_removes) + " }"
+        _, err, rc = run(["nft", "delete", "element", family, table, set_name, elements])
+        if rc != 0:
+            raise WhitelistSyncError(f"failed to remove {overlapping_removes}: {err}")
 
     if to_add:
         elements = "{ " + ", ".join(to_add) + " }"
@@ -265,11 +325,11 @@ def apply_diff(family, table, set_name, current, desired):
         if rc != 0:
             raise WhitelistSyncError(f"failed to add {to_add}: {err}")
 
-    if to_remove:
-        elements = "{ " + ", ".join(to_remove) + " }"
+    if remaining_removes:
+        elements = "{ " + ", ".join(remaining_removes) + " }"
         _, err, rc = run(["nft", "delete", "element", family, table, set_name, elements])
         if rc != 0:
-            raise WhitelistSyncError(f"failed to remove {to_remove}: {err}")
+            raise WhitelistSyncError(f"failed to remove {remaining_removes}: {err}")
 
     return to_add, to_remove
 
