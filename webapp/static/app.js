@@ -135,16 +135,30 @@ function renderPublicIp(data) {
   }
 }
 
+let latestPublicIpData = null;
+
+function populateDdnsFieldsForSelectedService() {
+  const service = document.getElementById("ddns-service-select").value;
+  if (service === "noip" && latestPublicIpData) {
+    document.getElementById("ddns-username-input").value = latestPublicIpData.noip_username || "";
+    document.getElementById("ddns-hostnames-input").value = latestPublicIpData.noip_hostnames || "";
+    document.getElementById("ddns-password-input").value = "";
+  }
+}
+
+document.getElementById("ddns-service-select").addEventListener("change", populateDdnsFieldsForSelectedService);
+
 let ddnsFormInitialized = false;
 
 function prefillDdnsForm(data) {
-  // Only prefill once -- a poll landing mid-edit shouldn't stomp on
-  // whatever the user is currently typing. Password is never sent back by
-  // the API, so there's nothing to prefill it with.
+  // Only auto-prefill once, on initial load -- a poll landing mid-edit
+  // shouldn't stomp on whatever the user is currently typing. Explicitly
+  // switching the service dropdown (once more than one exists) re-populates
+  // on purpose, via the change listener above. Password is never sent back
+  // by the API, so there's nothing to prefill it with.
   if (ddnsFormInitialized) return;
   ddnsFormInitialized = true;
-  if (data.noip_username) document.getElementById("ddns-username-input").value = data.noip_username;
-  if (data.noip_hostnames) document.getElementById("ddns-hostnames-input").value = data.noip_hostnames;
+  populateDdnsFieldsForSelectedService();
 }
 
 async function loadPublicIp() {
@@ -152,6 +166,7 @@ async function loadPublicIp() {
     const res = await fetch("/api/public-ip");
     if (!res.ok) return;
     const data = await res.json();
+    latestPublicIpData = data;
     renderPublicIp(data);
     prefillDdnsForm(data);
   } catch (err) {

@@ -95,12 +95,14 @@
 
     <div class="card" id="card-configure-ddns">
       <h2>Configure DDNS</h2>
-      <p class="power-desc">No-IP (noip-duc) only, for now. The noip-duc package itself has to
-        already be installed on this box -- it isn't in any apt repo, so this can't install it
-        for you. Download the .deb for this architecture from
-        <a href="https://www.noip.com/download" target="_blank" rel="noopener noreferrer">noip.com</a>
-        and install it (<code>dpkg -i</code>) first if it isn't there yet.</p>
       <div class="clock-form">
+        <label>Service
+          <select id="ddns-service-select">
+            <option value="noip">No-IP</option>
+          </select>
+        </label>
+      </div>
+      <div class="clock-form" id="ddns-noip-fields">
         <label>Username <input type="text" id="ddns-username-input" autocomplete="off"></label>
         <label>Password <input type="password" id="ddns-password-input" autocomplete="off" placeholder="leave blank to keep current"></label>
         <label>Hostname(s) <input type="text" id="ddns-hostnames-input" placeholder="e.g. shrouthome.ddns.net"></label>

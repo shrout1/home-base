@@ -252,3 +252,28 @@ button:disabled {
 .help-details .vpn-help-steps {
   margin-top: 0;
 }
+
+.clock-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin: 0.5rem 0;
+}
+.clock-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+.clock-form input,
+.clock-form select {
+  font-size: 0.9rem;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  width: 100%;
+  font-family: inherit;
+}

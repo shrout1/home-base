@@ -100,7 +100,7 @@ render() {
 log "installing packages"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-PACKAGES=(python3-flask)
+PACKAGES=(python3-flask wget)
 [[ "$ENABLE_OPENVPN" == "true" ]] && PACKAGES+=(openvpn easy-rsa)
 [[ "$ENABLE_WIREGUARD" == "true" ]] && PACKAGES+=(wireguard)
 apt-get install -y "${PACKAGES[@]}"
@@ -384,12 +384,34 @@ if [[ "$NFT_RULESET_CHANGED" -eq 1 ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 4. DDNS (No-IP / noip-duc) -- adopt if present, otherwise this is
-#    supplementary: warn and move on rather than block the rest of the
-#    install. noip-duc isn't in any apt repo (a direct .deb download from
-#    No-IP with no stable scriptable URL), so a clean box needs it installed
-#    by hand first.
+# 4. DDNS (No-IP / noip-duc) -- installed automatically if missing. Not in
+#    any apt repo, but No-IP does publish a stable, version-independent
+#    tarball URL (https://www.noip.com/download/linux/latest) containing a
+#    .deb per architecture, so this can actually be scripted -- earlier
+#    versions of this installer assumed otherwise and just told the admin
+#    to download it by hand. Supplementary either way: a failure here warns
+#    and moves on rather than blocking the rest of the install. Configured
+#    from homebase.conf if credentials are set there, otherwise left for the
+#    dashboard's Configure DDNS card.
 # ---------------------------------------------------------------------------
+if ! command -v noip-duc >/dev/null 2>&1; then
+    log "noip-duc not found -- installing from noip.com"
+    NOIP_TMP="$(mktemp -d)"
+    if wget -q --content-disposition "https://www.noip.com/download/linux/latest" -O "$NOIP_TMP/noip-duc.tar.gz"; then
+        tar -xzf "$NOIP_TMP/noip-duc.tar.gz" -C "$NOIP_TMP"
+        NOIP_DEB="$(find "$NOIP_TMP" -name "*_$(dpkg --print-architecture).deb" -print -quit)"
+        if [[ -n "$NOIP_DEB" ]]; then
+            apt-get install -y "$NOIP_DEB"
+            log "  installed $(basename "$NOIP_DEB")"
+        else
+            warn "downloaded noip-duc but found no .deb for architecture $(dpkg --print-architecture) -- install it by hand from https://www.noip.com/download"
+        fi
+    else
+        warn "couldn't download noip-duc from noip.com (network issue, or the URL has changed) -- install it by hand from https://www.noip.com/download, or configure DDNS later once it's present"
+    fi
+    rm -rf "$NOIP_TMP"
+fi
+
 if command -v noip-duc >/dev/null 2>&1 && [[ -s /etc/default/noip-duc ]]; then
     log "existing noip-duc install found and configured -- adopting, not touching its config"
     NOIP_ADOPTED_HOSTNAMES="$(grep -oP '^NOIP_HOSTNAMES=\K.*' /etc/default/noip-duc || true)"
@@ -423,15 +445,11 @@ EOF
     chmod 0600 /etc/default/noip-duc
     systemctl enable --now noip-duc >/dev/null 2>&1 || true
 elif command -v noip-duc >/dev/null 2>&1; then
-    warn "noip-duc is installed but not configured, and NOIP_USERNAME/NOIP_PASSWORD/NOIP_HOSTNAMES
-      aren't all set in homebase.conf -- set them and re-run to configure it."
-elif [[ -n "${NOIP_USERNAME:-}" && -n "${NOIP_PASSWORD:-}" && -n "${NOIP_HOSTNAMES:-}" ]]; then
-    warn "noip-duc isn't installed and isn't in any apt repo -- download the .deb for this
-      architecture from https://www.noip.com/download, install it (dpkg -i), then re-run
-      this installer to have it configured from NOIP_USERNAME/NOIP_PASSWORD/NOIP_HOSTNAMES
-      in homebase.conf."
+    log "noip-duc is installed but not configured yet -- set it up from the dashboard's
+      Configure DDNS card, or set NOIP_USERNAME/NOIP_PASSWORD/NOIP_HOSTNAMES in homebase.conf
+      and re-run"
 else
-    log "noip-duc not found and no NOIP_* credentials set in homebase.conf -- skipping DDNS setup"
+    warn "noip-duc still isn't available -- DDNS won't be configurable until it's installed (see above)"
 fi
 
 # Auto-fill VPN_REMOTE_HOST (used when generating client .ovpn bundles) from
