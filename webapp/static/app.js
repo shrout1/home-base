@@ -113,9 +113,8 @@ function updateBackendVisibility(data) {
   if (backendVisibilityInitialized) return;
   backendVisibilityInitialized = true;
   document.getElementById("card-clients").hidden = !data.openvpn_enabled;
-  document.getElementById("card-active-clients").hidden = !data.openvpn_enabled;
   document.getElementById("card-wg-clients").hidden = !data.wireguard_enabled;
-  document.getElementById("card-active-wg-clients").hidden = !data.wireguard_enabled;
+  document.getElementById("card-active-clients").hidden = !data.openvpn_enabled && !data.wireguard_enabled;
 }
 
 async function poll() {
@@ -391,8 +390,18 @@ function renderActiveConnections(conns) {
   list.innerHTML = "";
   for (const c of conns) {
     const li = document.createElement("li");
+
     const label = document.createElement("span");
-    label.textContent = `${c.name} — ${c.real_address}, since ${c.connected_since}`;
+    const badge = document.createElement("span");
+    badge.className = `protocol-badge ${c.protocol.toLowerCase()}`;
+    badge.textContent = c.protocol;
+    label.appendChild(badge);
+    label.appendChild(document.createTextNode(
+      c.protocol === "WireGuard"
+        ? `${c.name} — ${c.real_address || "unknown endpoint"}, last handshake ${fmtTime(c.connected_since)}`
+        : `${c.name} — ${c.real_address}, since ${c.connected_since}`
+    ));
+
     const meta = document.createElement("span");
     meta.className = "row-meta";
     meta.textContent = `${fmtBytes(c.bytes_received)} down / ${fmtBytes(c.bytes_sent)} up`;
@@ -404,9 +413,13 @@ function renderActiveConnections(conns) {
 
 async function loadActiveConnections() {
   try {
-    const res = await fetch("/api/active-connections");
-    if (!res.ok) return;
-    renderActiveConnections(await res.json());
+    const [ovpnRes, wgRes] = await Promise.all([
+      fetch("/api/active-connections"),
+      fetch("/api/wg-active-connections"),
+    ]);
+    const ovpn = ovpnRes.ok ? (await ovpnRes.json()).map((c) => ({ ...c, protocol: "OpenVPN" })) : [];
+    const wg = wgRes.ok ? (await wgRes.json()).map((c) => ({ ...c, protocol: "WireGuard" })) : [];
+    renderActiveConnections([...ovpn, ...wg]);
   } catch (err) {
     // non-fatal -- next poll cycle retries
   }
@@ -575,40 +588,6 @@ async function generateWgPeer() {
 
 document.getElementById("generate-wg-client").addEventListener("click", generateWgPeer);
 
-// --- Active WireGuard connections ---------------------------------------
-
-function renderActiveWgConnections(conns) {
-  const list = document.getElementById("active-wg-client-list");
-  if (!conns || !conns.length) {
-    list.className = "row-list empty";
-    list.innerHTML = "<li>nobody connected</li>";
-    return;
-  }
-  list.className = "row-list";
-  list.innerHTML = "";
-  for (const c of conns) {
-    const li = document.createElement("li");
-    const label = document.createElement("span");
-    label.textContent = `${c.name} — ${c.real_address || "unknown endpoint"}, last handshake ${fmtTime(c.connected_since)}`;
-    const meta = document.createElement("span");
-    meta.className = "row-meta";
-    meta.textContent = `${fmtBytes(c.bytes_received)} down / ${fmtBytes(c.bytes_sent)} up`;
-    li.appendChild(label);
-    li.appendChild(meta);
-    list.appendChild(li);
-  }
-}
-
-async function loadActiveWgConnections() {
-  try {
-    const res = await fetch("/api/wg-active-connections");
-    if (!res.ok) return;
-    renderActiveWgConnections(await res.json());
-  } catch (err) {
-    // non-fatal -- next poll cycle retries
-  }
-}
-
 // --- Backup ------------------------------------------------------------
 
 function downloadBackup() {
@@ -627,9 +606,7 @@ poll();
 loadClients();
 loadActiveConnections();
 loadWgPeers();
-loadActiveWgConnections();
 setInterval(poll, POLL_MS);
 setInterval(loadClients, POLL_MS * 4);
 setInterval(loadActiveConnections, POLL_MS);
 setInterval(loadWgPeers, POLL_MS * 4);
-setInterval(loadActiveWgConnections, POLL_MS);
