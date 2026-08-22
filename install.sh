@@ -289,6 +289,12 @@ print(ipaddress.IPv4Network(('$OPENVPN_SUBNET', '$OPENVPN_SUBNET_MASK')))
 ")"
     ensure_nft_rule input "dport $OPENVPN_PORT .*ip saddr @$NFT_SET" \
         iifname "$WAN_IF" "$OPENVPN_PROTO" dport "$OPENVPN_PORT" ip saddr "@$NFT_SET" accept
+    # Once a client is on the tunnel, let it reach anything this box itself
+    # serves (SSH, the dashboard, etc.), not just forwarded LAN/internet
+    # traffic -- already-authenticated-by-the-tunnel is the trust boundary
+    # here, matching the access an on-LAN client already has.
+    ensure_nft_rule input "iifname \"tun0\" accept" \
+        iifname tun0 accept
     ensure_nft_rule forward "iifname \"tun0\" oifname \"$WAN_IF\"" \
         iifname tun0 oifname "$WAN_IF" accept
     ensure_nat_rule "ip saddr $OPENVPN_SUBNET_CIDR" \
@@ -344,6 +350,11 @@ print(ipaddress.IPv4Network(('$WIREGUARD_SUBNET', '$WIREGUARD_SUBNET_MASK')))
 ")"
     ensure_nft_rule input "dport $WIREGUARD_PORT .*ip saddr @$NFT_SET" \
         iifname "$WAN_IF" udp dport "$WIREGUARD_PORT" ip saddr "@$NFT_SET" accept
+    # Same reasoning as OpenVPN's tun0 input-accept above -- a WireGuard
+    # peer gets the same access to this box's own services that an OpenVPN
+    # client already has, not just forwarded traffic.
+    ensure_nft_rule input "iifname \"wg0\" accept" \
+        iifname wg0 accept
     ensure_nft_rule forward "iifname \"wg0\" oifname \"$WAN_IF\"" \
         iifname wg0 oifname "$WAN_IF" accept
     ensure_nat_rule "ip saddr $WIREGUARD_SUBNET_CIDR" \
