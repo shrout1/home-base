@@ -394,6 +394,23 @@ if command -v noip-duc >/dev/null 2>&1 && [[ -s /etc/default/noip-duc ]]; then
     log "existing noip-duc install found and configured -- adopting, not touching its config"
     NOIP_ADOPTED_HOSTNAMES="$(grep -oP '^NOIP_HOSTNAMES=\K.*' /etc/default/noip-duc || true)"
     [[ -n "$NOIP_ADOPTED_HOSTNAMES" ]] && log "  DDNS hostname(s): $NOIP_ADOPTED_HOSTNAMES"
+    # "Configured" only means the config file has content -- it says nothing
+    # about whether the service was ever actually turned on. Found a real
+    # case of this: a fully valid, working config sitting next to a service
+    # that had simply never been enabled or started. This is a service-state
+    # check, not a config change, so it stays within "adopt, don't touch".
+    if [[ "$(systemctl is-active noip-duc 2>/dev/null)" == "active" ]]; then
+        log "  service already running"
+    elif systemctl enable --now noip-duc >/dev/null 2>&1; then
+        log "  service wasn't running -- started it"
+    else
+        warn "noip-duc is configured but couldn't be started -- check \`systemctl status noip-duc\`"
+    fi
+    if [[ "$(systemctl is-enabled noip-duc 2>/dev/null)" == "enabled" ]]; then
+        log "  service already enabled at boot"
+    elif systemctl enable noip-duc >/dev/null 2>&1; then
+        log "  service wasn't enabled at boot -- enabled it"
+    fi
 elif command -v noip-duc >/dev/null 2>&1 && [[ -n "${NOIP_USERNAME:-}" && -n "${NOIP_PASSWORD:-}" && -n "${NOIP_HOSTNAMES:-}" ]]; then
     log "noip-duc is installed but unconfigured -- configuring from homebase.conf"
     cat > /etc/default/noip-duc <<EOF
