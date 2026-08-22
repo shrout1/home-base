@@ -106,6 +106,7 @@ function renderChanges(data) {
 }
 
 function renderPublicIp(data) {
+  setText("public-ip-checked", fmtTime(data.checked_at));
   setText("public-ip", data.public_ip || (data.public_ip_error ? "unreachable" : "—"));
   setText("ddns-hostname", data.vpn_remote_host || "not set");
   setText("ddns-resolved", data.resolved_ip || (data.resolve_error ? "resolution failed" : "—"));
@@ -147,6 +148,36 @@ function populateDdnsFieldsForSelectedService() {
 }
 
 document.getElementById("ddns-service-select").addEventListener("change", populateDdnsFieldsForSelectedService);
+
+async function syncDdnsNow() {
+  const btn = document.getElementById("ddns-sync-now");
+  const message = document.getElementById("ddns-sync-message");
+  btn.disabled = true;
+  message.textContent = "Restarting noip-duc and checking…";
+  message.className = "message";
+  try {
+    const res = await fetch("/api/ddns/sync", { method: "POST" });
+    const data = await res.json();
+    if (res.ok && data.status === "ok") {
+      latestPublicIpData = data;
+      renderPublicIp(data);
+      message.textContent = data.in_sync
+        ? "Synced -- hostname matches your current public IP."
+        : "Checked -- see status above.";
+      message.className = "message ok";
+    } else {
+      message.textContent = data.message || "Sync failed.";
+      message.className = "message error";
+    }
+  } catch (err) {
+    message.textContent = "Request failed.";
+    message.className = "message error";
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+document.getElementById("ddns-sync-now").addEventListener("click", syncDdnsNow);
 
 let ddnsFormInitialized = false;
 

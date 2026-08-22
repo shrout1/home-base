@@ -77,12 +77,15 @@
     <div class="card" id="card-public-ip">
       <h2>Public IP / DDNS</h2>
       <dl>
+        <dt>Last checked</dt><dd id="public-ip-checked">&mdash;</dd>
         <dt>Public IP</dt><dd id="public-ip">&mdash;</dd>
         <dt>VPN hostname</dt><dd id="ddns-hostname">&mdash;</dd>
         <dt>Hostname resolves to</dt><dd id="ddns-resolved">&mdash;</dd>
         <dt>In sync?</dt><dd id="ddns-sync-status" class="status">&mdash;</dd>
         <dt>noip-duc service</dt><dd id="noip-service-status">&mdash;</dd>
       </dl>
+      <button id="ddns-sync-now">Sync now</button>
+      <p id="ddns-sync-message" class="message"></p>
       <details class="help-details">
         <summary>&rsaquo; VPN &amp; Dynamic DNS</summary>
         <p class="power-desc">If a VPN client can't connect from outside at all --

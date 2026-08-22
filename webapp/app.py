@@ -511,6 +511,7 @@ def get_public_ip_status(conf):
     noip_conf = _parse_kv_file(NOIP_DEFAULT_PATH)
 
     return {
+        "checked_at": _iso_now(),
         "public_ip": public_ip,
         "public_ip_error": public_ip_error,
         "vpn_remote_host": vpn_remote_host,
@@ -522,6 +523,22 @@ def get_public_ip_status(conf):
         "noip_username": noip_conf.get("NOIP_USERNAME") or None,
         "noip_hostnames": noip_conf.get("NOIP_HOSTNAMES") or None,
     }
+
+
+def sync_ddns_now():
+    """Every field in get_public_ip_status() is already computed live on
+    each call -- there's no cache to invalidate. What isn't live is
+    noip-duc's own update cycle (NOIP_CHECK_INTERVAL, 5 minutes by default);
+    restarting it forces an immediate check instead of waiting out the rest
+    of that interval, same as it does right after a config save."""
+    if not shutil.which("noip-duc"):
+        return False, "noip-duc isn't installed."
+    if not NOIP_DEFAULT_PATH.exists():
+        return False, "noip-duc isn't configured yet."
+    _out, err, rc = run(["systemctl", "restart", "noip-duc"])
+    if rc != 0:
+        return False, f"Failed to restart noip-duc: {err}"
+    return True, None
 
 
 def save_ddns_config(payload):
@@ -1117,6 +1134,19 @@ def api_ddns_save():
     if not ok:
         return jsonify({"status": "error", "message": message}), 400
     return jsonify({"status": "ok"})
+
+
+@app.route("/api/ddns/sync", methods=["POST"])
+def api_ddns_sync():
+    ok, message = sync_ddns_now()
+    if not ok:
+        return jsonify({"status": "error", "message": message}), 400
+    # noip-duc performs its update check immediately on start, but give it a
+    # beat to actually finish before reporting status back -- otherwise this
+    # can race the restart and report pre-update state.
+    time.sleep(1.5)
+    conf = load_config()
+    return jsonify({"status": "ok", **get_public_ip_status(conf)})
 
 
 @app.route("/api/sync", methods=["POST"])
