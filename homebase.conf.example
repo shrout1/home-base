@@ -11,7 +11,9 @@ NFT_FAMILY="inet"
 NFT_TABLE="filter"
 NFT_SET="vpn_allowed"
 
-# How often the background sync loop checks the source for changes.
+# How often the background sync loop checks the source for changes. Also
+# changeable later from the dashboard (Whitelist source card) -- a change
+# there writes back here and takes effect on the sync loop's next cycle.
 POLL_INTERVAL_SECONDS=900
 
 # Where the whitelist comes from -- "github_gist" or "raw_url".

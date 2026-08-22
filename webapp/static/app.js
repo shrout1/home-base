@@ -30,14 +30,23 @@ function renderPillList(id, items, className) {
 function renderSource(data) {
   setText("source-type", data.source.source_type || "not configured");
 
-  let detail = "—";
-  if (data.source.source_type === "github_gist") {
+  const detailEl = document.getElementById("source-detail");
+  if (data.source.source_type === "raw_url" && data.source.source_url) {
+    // A real <a>, not textContent -- so it's actually clickable to open the
+    // whitelist doc directly, instead of the admin having to copy/paste it.
+    detailEl.innerHTML = "";
+    const link = document.createElement("a");
+    link.href = data.source.source_url;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = data.source.source_url;
+    detailEl.appendChild(link);
+  } else if (data.source.source_type === "github_gist") {
     const idPart = data.source.gist_id ? `gist ${data.source.gist_id}` : "no gist ID set";
-    detail = `${idPart}, token ${data.source.gist_token_configured ? "configured" : "MISSING"}`;
-  } else if (data.source.source_type === "raw_url") {
-    detail = data.source.source_url || "URL MISSING";
+    setText("source-detail", `${idPart}, token ${data.source.gist_token_configured ? "configured" : "MISSING"}`);
+  } else {
+    setText("source-detail", data.source.source_type === "raw_url" ? "URL MISSING" : "—");
   }
-  setText("source-detail", detail);
 
   setText("nft-target", `${data.nft_target.family} ${data.nft_target.table} ${data.nft_target.set}`);
   setText("poll-interval", `${data.poll_interval_seconds}s`);
@@ -120,6 +129,7 @@ async function poll() {
     renderCurrent(data);
     renderChanges(data);
     prefillSourceForm(data);
+    prefillPollIntervalForm(data);
     updateBackendVisibility(data);
     indicator.classList.remove("stale");
   } catch (err) {
@@ -172,6 +182,54 @@ function prefillSourceForm(data) {
   }
   updateSourceFormVisibility();
 }
+
+let pollIntervalFormInitialized = false;
+
+function prefillPollIntervalForm(data) {
+  if (pollIntervalFormInitialized) return;
+  pollIntervalFormInitialized = true;
+  document.getElementById("poll-interval-input").value = data.poll_interval_seconds;
+}
+
+async function savePollInterval() {
+  const btn = document.getElementById("poll-interval-save");
+  const message = document.getElementById("poll-interval-message");
+  const input = document.getElementById("poll-interval-input");
+  const seconds = parseInt(input.value, 10);
+
+  if (!Number.isInteger(seconds) || seconds < 15) {
+    message.textContent = "Enter a whole number of seconds, at least 15.";
+    message.className = "message error";
+    return;
+  }
+
+  btn.disabled = true;
+  message.textContent = "Saving…";
+  message.className = "message";
+  try {
+    const res = await fetch("/api/poll-interval", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ poll_interval_seconds: seconds }),
+    });
+    const data = await res.json();
+    if (res.ok && data.status === "ok") {
+      message.textContent = `Saved -- syncing every ${seconds}s. Takes effect on the sync loop's next cycle.`;
+      message.className = "message ok";
+    } else {
+      message.textContent = data.message || "Failed to save.";
+      message.className = "message error";
+    }
+  } catch (err) {
+    message.textContent = "Request failed.";
+    message.className = "message error";
+  } finally {
+    btn.disabled = false;
+    poll();
+  }
+}
+
+document.getElementById("poll-interval-save").addEventListener("click", savePollInterval);
 
 async function saveSource() {
   const btn = document.getElementById("source-save");

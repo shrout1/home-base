@@ -344,7 +344,7 @@ def _sync_loop():
     while not _stop_event.is_set():
         conf = load_config()
         run_sync_once(conf)
-        interval = max(int(conf.get("POLL_INTERVAL_SECONDS", "120")), 15)
+        interval = max(int(conf.get("POLL_INTERVAL_SECONDS", "900")), 15)
         _stop_event.wait(interval)
 
 
@@ -388,6 +388,22 @@ def save_source_config(payload):
             updates["GIST_TOKEN"] = token
 
     save_config_values(updates)
+    return True, None
+
+
+def save_poll_interval(payload):
+    raw = payload.get("poll_interval_seconds")
+    try:
+        interval = int(raw)
+    except (TypeError, ValueError):
+        return False, "Poll interval must be a whole number of seconds"
+    if interval < 15:
+        # Matches the floor _sync_loop already enforces -- reject here
+        # instead of silently clamping, so the dashboard doesn't show a
+        # value that isn't actually what's running.
+        return False, "Poll interval must be at least 15 seconds"
+
+    save_config_values({"POLL_INTERVAL_SECONDS": str(interval)})
     return True, None
 
 
@@ -913,7 +929,7 @@ def api_status():
                 "table": conf.get("NFT_TABLE", "filter"),
                 "set": conf.get("NFT_SET", "vpn_allowed"),
             },
-            "poll_interval_seconds": int(conf.get("POLL_INTERVAL_SECONDS", "120")),
+            "poll_interval_seconds": int(conf.get("POLL_INTERVAL_SECONDS", "900")),
             "openvpn_enabled": conf.get("ENABLE_OPENVPN", "true") == "true",
             "wireguard_enabled": conf.get("ENABLE_WIREGUARD", "false") == "true",
             **state,
@@ -944,6 +960,15 @@ def api_source_save():
     state = run_sync_once(conf)
     status_code = 200 if state["status"] == "ok" else 502
     return jsonify(state), status_code
+
+
+@app.route("/api/poll-interval", methods=["POST"])
+def api_poll_interval_save():
+    payload = request.get_json(silent=True) or {}
+    ok, message = save_poll_interval(payload)
+    if not ok:
+        return jsonify({"status": "error", "message": message}), 400
+    return jsonify({"status": "ok", "poll_interval_seconds": int(payload["poll_interval_seconds"])})
 
 
 @app.route("/api/vpn-clients")
