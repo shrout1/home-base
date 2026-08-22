@@ -71,6 +71,22 @@
       <p id="sync-message" class="message"></p>
       <ul id="sync-warnings" class="warning-list" hidden></ul>
     </div>
+
+    <div class="card" id="card-public-ip">
+      <h2>Public IP / DDNS</h2>
+      <dl>
+        <dt>Public IP</dt><dd id="public-ip">&mdash;</dd>
+        <dt>VPN hostname</dt><dd id="ddns-hostname">&mdash;</dd>
+        <dt>Hostname resolves to</dt><dd id="ddns-resolved">&mdash;</dd>
+        <dt>In sync?</dt><dd id="ddns-sync-status" class="status">&mdash;</dd>
+        <dt>noip-duc service</dt><dd id="noip-service-status">&mdash;</dd>
+      </dl>
+      <p class="power-desc">If a VPN client can't connect from outside at all --
+        no error, just silence -- check here first. A stale DDNS record (this
+        hostname resolving to an IP that isn't your current public IP) means
+        clients are dialing an address that isn't you anymore, and no amount
+        of correct firewall/whitelist config on this box will fix that.</p>
+    </div>
   </section>
 
   <section class="card" id="card-current">

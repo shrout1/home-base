@@ -20,6 +20,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import tarfile
 import threading
@@ -405,6 +406,65 @@ def save_poll_interval(payload):
 
     save_config_values({"POLL_INTERVAL_SECONDS": str(interval)})
     return True, None
+
+
+# ---------------------------------------------------------------------------
+# Public IP / DDNS -- neither VPN can be reached from outside if these are
+# wrong, and unlike a whitelist/nftables misconfiguration (which at least
+# shows up in a VPN server's own logs once a packet arrives), a stale DDNS
+# record or a router not actually forwarding a port produces total silence:
+# no packet ever reaches this box at all. This card exists to make that
+# class of problem visible from the dashboard instead of requiring an SSH
+# session and several separate commands to piece together.
+# ---------------------------------------------------------------------------
+NOIP_DEFAULT_PATH = Path("/etc/default/noip-duc")
+
+
+def get_public_ip_status(conf):
+    public_ip = None
+    public_ip_error = None
+    try:
+        req = urllib.request.Request("https://api.ipify.org", headers={"User-Agent": "home-base"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            public_ip = resp.read().decode().strip()
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        public_ip_error = str(e)
+
+    vpn_remote_host = conf.get("VPN_REMOTE_HOST") or None
+    resolved_ip = None
+    resolve_error = None
+    if vpn_remote_host:
+        try:
+            resolved_ip = socket.gethostbyname(vpn_remote_host)
+        except OSError as e:
+            resolve_error = str(e)
+
+    in_sync = None
+    if public_ip and resolved_ip:
+        in_sync = public_ip == resolved_ip
+
+    noip_installed = shutil.which("noip-duc") is not None
+    noip_active = False
+    if noip_installed:
+        out, _err, rc = run(["systemctl", "is-active", "noip-duc"])
+        noip_active = rc == 0 and out == "active"
+    noip_hostnames = None
+    if NOIP_DEFAULT_PATH.exists():
+        m = re.search(r'^NOIP_HOSTNAMES=(.*)$', NOIP_DEFAULT_PATH.read_text(), re.MULTILINE)
+        if m:
+            noip_hostnames = m.group(1).strip()
+
+    return {
+        "public_ip": public_ip,
+        "public_ip_error": public_ip_error,
+        "vpn_remote_host": vpn_remote_host,
+        "resolved_ip": resolved_ip,
+        "resolve_error": resolve_error,
+        "in_sync": in_sync,
+        "noip_installed": noip_installed,
+        "noip_active": noip_active,
+        "noip_hostnames": noip_hostnames,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -935,6 +995,12 @@ def api_status():
             **state,
         }
     )
+
+
+@app.route("/api/public-ip")
+def api_public_ip():
+    conf = load_config()
+    return jsonify(get_public_ip_status(conf))
 
 
 @app.route("/api/sync", methods=["POST"])

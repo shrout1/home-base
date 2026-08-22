@@ -105,6 +105,46 @@ function renderChanges(data) {
     .join("");
 }
 
+function renderPublicIp(data) {
+  setText("public-ip", data.public_ip || (data.public_ip_error ? "unreachable" : "—"));
+  setText("ddns-hostname", data.vpn_remote_host || "not set");
+  setText("ddns-resolved", data.resolved_ip || (data.resolve_error ? "resolution failed" : "—"));
+
+  const syncEl = document.getElementById("ddns-sync-status");
+  if (data.in_sync === true) {
+    syncEl.textContent = "yes";
+    syncEl.className = "status ok";
+  } else if (data.in_sync === false) {
+    syncEl.textContent = "MISMATCH -- hostname points at a stale IP";
+    syncEl.className = "status error";
+  } else {
+    syncEl.textContent = "unknown";
+    syncEl.className = "status unknown";
+  }
+
+  const noipEl = document.getElementById("noip-service-status");
+  if (!data.noip_installed) {
+    noipEl.textContent = "not installed";
+    noipEl.className = "status unknown";
+  } else if (data.noip_active) {
+    noipEl.textContent = "active";
+    noipEl.className = "status ok";
+  } else {
+    noipEl.textContent = "inactive -- DDNS record won't update if your IP changes";
+    noipEl.className = "status error";
+  }
+}
+
+async function loadPublicIp() {
+  try {
+    const res = await fetch("/api/public-ip");
+    if (!res.ok) return;
+    renderPublicIp(await res.json());
+  } catch (err) {
+    // non-fatal -- next poll cycle retries
+  }
+}
+
 let backendVisibilityInitialized = false;
 
 function updateBackendVisibility(data) {
@@ -606,7 +646,11 @@ poll();
 loadClients();
 loadActiveConnections();
 loadWgPeers();
+loadPublicIp();
 setInterval(poll, POLL_MS);
 setInterval(loadClients, POLL_MS * 4);
 setInterval(loadActiveConnections, POLL_MS);
 setInterval(loadWgPeers, POLL_MS * 4);
+// Slower cadence -- this hits an external IP-lookup service and does a DNS
+// resolution, unlike the other cards which only read local state.
+setInterval(loadPublicIp, POLL_MS * 12);
