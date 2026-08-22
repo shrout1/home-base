@@ -83,11 +83,30 @@
         <dt>In sync?</dt><dd id="ddns-sync-status" class="status">&mdash;</dd>
         <dt>noip-duc service</dt><dd id="noip-service-status">&mdash;</dd>
       </dl>
-      <p class="power-desc">If a VPN client can't connect from outside at all --
-        no error, just silence -- check here first. A stale DDNS record (this
-        hostname resolving to an IP that isn't your current public IP) means
-        clients are dialing an address that isn't you anymore, and no amount
-        of correct firewall/whitelist config on this box will fix that.</p>
+      <details class="help-details">
+        <summary>&rsaquo; VPN &amp; Dynamic DNS</summary>
+        <p class="power-desc">If a VPN client can't connect from outside at all --
+          no error, just silence -- check here first. A stale DDNS record (this
+          hostname resolving to an IP that isn't your current public IP) means
+          clients are dialing an address that isn't you anymore, and no amount
+          of correct firewall/whitelist config on this box will fix that.</p>
+      </details>
+    </div>
+
+    <div class="card" id="card-configure-ddns">
+      <h2>Configure DDNS</h2>
+      <p class="power-desc">No-IP (noip-duc) only, for now. The noip-duc package itself has to
+        already be installed on this box -- it isn't in any apt repo, so this can't install it
+        for you. Download the .deb for this architecture from
+        <a href="https://www.noip.com/download" target="_blank" rel="noopener noreferrer">noip.com</a>
+        and install it (<code>dpkg -i</code>) first if it isn't there yet.</p>
+      <div class="clock-form">
+        <label>Username <input type="text" id="ddns-username-input" autocomplete="off"></label>
+        <label>Password <input type="password" id="ddns-password-input" autocomplete="off" placeholder="leave blank to keep current"></label>
+        <label>Hostname(s) <input type="text" id="ddns-hostnames-input" placeholder="e.g. shrouthome.ddns.net"></label>
+      </div>
+      <button id="ddns-save">Save &amp; restart service</button>
+      <p id="ddns-message" class="message"></p>
     </div>
   </section>
 

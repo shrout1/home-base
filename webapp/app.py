@@ -508,11 +508,7 @@ def get_public_ip_status(conf):
     if noip_installed:
         out, _err, rc = run(["systemctl", "is-active", "noip-duc"])
         noip_active = rc == 0 and out == "active"
-    noip_hostnames = None
-    if NOIP_DEFAULT_PATH.exists():
-        m = re.search(r'^NOIP_HOSTNAMES=(.*)$', NOIP_DEFAULT_PATH.read_text(), re.MULTILINE)
-        if m:
-            noip_hostnames = m.group(1).strip()
+    noip_conf = _parse_kv_file(NOIP_DEFAULT_PATH)
 
     return {
         "public_ip": public_ip,
@@ -523,8 +519,59 @@ def get_public_ip_status(conf):
         "in_sync": in_sync,
         "noip_installed": noip_installed,
         "noip_active": noip_active,
-        "noip_hostnames": noip_hostnames,
+        "noip_username": noip_conf.get("NOIP_USERNAME") or None,
+        "noip_hostnames": noip_conf.get("NOIP_HOSTNAMES") or None,
     }
+
+
+def save_ddns_config(payload):
+    if not shutil.which("noip-duc"):
+        return (
+            False,
+            "noip-duc isn't installed on this box -- it isn't in any apt repo, so download the "
+            ".deb for this architecture from https://www.noip.com/download and install it "
+            "(dpkg -i) first.",
+        )
+
+    username = (payload.get("username") or "").strip()
+    hostnames = (payload.get("hostnames") or "").strip()
+    password = payload.get("password") or ""
+
+    if not username:
+        return False, "Username is required."
+    if not hostnames:
+        return False, "At least one hostname is required."
+
+    # Blank password means "keep the current one" -- never echoed back to
+    # the client to prefill, same convention as the whitelist source's gist
+    # token, so this is the only way to leave it unchanged.
+    existing = _parse_kv_file(NOIP_DEFAULT_PATH)
+    if not password:
+        password = existing.get("NOIP_PASSWORD", "")
+        if not password:
+            return False, "Password is required (none currently set)."
+
+    content = (
+        f"NOIP_USERNAME={username}\n"
+        f"NOIP_PASSWORD={password}\n"
+        f"NOIP_HOSTNAMES={hostnames}\n"
+        f"NOIP_CHECK_INTERVAL={existing.get('NOIP_CHECK_INTERVAL', '5m')}\n"
+        f"NOIP_LOG_LEVEL={existing.get('NOIP_LOG_LEVEL', 'info')}\n"
+    )
+    NOIP_DEFAULT_PATH.write_text(content)
+    NOIP_DEFAULT_PATH.chmod(0o600)
+
+    _out, err, rc = run(["systemctl", "enable", "noip-duc"])
+    if rc != 0:
+        return False, f"Saved, but failed to enable the service: {err}"
+    # Restart, not just start -- EnvironmentFile is only read at process
+    # start, so an already-running service needs a restart to pick up
+    # whatever just changed.
+    _out, err, rc = run(["systemctl", "restart", "noip-duc"])
+    if rc != 0:
+        return False, f"Saved, but failed to restart the service: {err}"
+
+    return True, None
 
 
 # ---------------------------------------------------------------------------
@@ -1061,6 +1108,15 @@ def api_status():
 def api_public_ip():
     conf = load_config()
     return jsonify(get_public_ip_status(conf))
+
+
+@app.route("/api/ddns", methods=["POST"])
+def api_ddns_save():
+    payload = request.get_json(silent=True) or {}
+    ok, message = save_ddns_config(payload)
+    if not ok:
+        return jsonify({"status": "error", "message": message}), 400
+    return jsonify({"status": "ok"})
 
 
 @app.route("/api/sync", methods=["POST"])

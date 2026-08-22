@@ -135,15 +135,71 @@ function renderPublicIp(data) {
   }
 }
 
+let ddnsFormInitialized = false;
+
+function prefillDdnsForm(data) {
+  // Only prefill once -- a poll landing mid-edit shouldn't stomp on
+  // whatever the user is currently typing. Password is never sent back by
+  // the API, so there's nothing to prefill it with.
+  if (ddnsFormInitialized) return;
+  ddnsFormInitialized = true;
+  if (data.noip_username) document.getElementById("ddns-username-input").value = data.noip_username;
+  if (data.noip_hostnames) document.getElementById("ddns-hostnames-input").value = data.noip_hostnames;
+}
+
 async function loadPublicIp() {
   try {
     const res = await fetch("/api/public-ip");
     if (!res.ok) return;
-    renderPublicIp(await res.json());
+    const data = await res.json();
+    renderPublicIp(data);
+    prefillDdnsForm(data);
   } catch (err) {
     // non-fatal -- next poll cycle retries
   }
 }
+
+async function saveDdns() {
+  const btn = document.getElementById("ddns-save");
+  const message = document.getElementById("ddns-message");
+  const username = document.getElementById("ddns-username-input").value.trim();
+  const password = document.getElementById("ddns-password-input").value;
+  const hostnames = document.getElementById("ddns-hostnames-input").value.trim();
+
+  if (!username || !hostnames) {
+    message.textContent = "Username and hostname(s) are required.";
+    message.className = "message error";
+    return;
+  }
+
+  btn.disabled = true;
+  message.textContent = "Saving and restarting service…";
+  message.className = "message";
+  try {
+    const res = await fetch("/api/ddns", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password, hostnames }),
+    });
+    const data = await res.json();
+    if (res.ok && data.status === "ok") {
+      message.textContent = "Saved -- service restarted. Check the Public IP / DDNS card above shortly to confirm it's syncing.";
+      message.className = "message ok";
+      document.getElementById("ddns-password-input").value = "";
+    } else {
+      message.textContent = data.message || "Failed to save.";
+      message.className = "message error";
+    }
+  } catch (err) {
+    message.textContent = "Request failed.";
+    message.className = "message error";
+  } finally {
+    btn.disabled = false;
+    loadPublicIp();
+  }
+}
+
+document.getElementById("ddns-save").addEventListener("click", saveDdns);
 
 let backendVisibilityInitialized = false;
 
