@@ -113,6 +113,27 @@
       <button id="ddns-save">Save &amp; restart service</button>
       <p id="ddns-message" class="message"></p>
     </div>
+
+    <div class="card" id="card-clock">
+      <div class="card-header-row">
+        <h2>System Clock</h2>
+        <button class="icon-btn" id="clock-get-client-time">Get client time</button>
+      </div>
+      <dl>
+        <dt>Current</dt><dd id="clock-now">&mdash;</dd>
+        <dt>NTP sync <input type="checkbox" id="clock-ntp-toggle" title="Enabled"></dt><dd id="clock-ntp" class="status">&mdash;</dd>
+        <dt>Your device</dt><dd id="clock-client-time">&mdash;</dd>
+      </dl>
+      <div class="clock-form">
+        <label>Date <input type="date" id="clock-date"></label>
+        <label>Time <input type="time" id="clock-time" step="1"></label>
+        <label>Time zone
+          <select id="clock-tz"></select>
+        </label>
+      </div>
+      <button id="clock-apply">Set clock</button>
+      <p id="clock-message" class="message"></p>
+    </div>
   </section>
 
   <section class="card" id="card-current">

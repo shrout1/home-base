@@ -272,6 +272,7 @@ async function poll() {
     prefillSourceForm(data);
     prefillPollIntervalForm(data);
     updateBackendVisibility(data);
+    renderClock(data.clock);
     indicator.classList.remove("stale");
   } catch (err) {
     indicator.classList.add("stale");
@@ -729,6 +730,296 @@ async function generateWgPeer() {
 }
 
 document.getElementById("generate-wg-client").addEventListener("click", generateWgPeer);
+
+// --- System clock --------------------------------------------------------
+// Ported from pi5-router's dashboard -- same motivation (a Pi has no
+// battery-backed RTC, and a wrong system clock silently breaks a VPN
+// handshake: WireGuard's replay protection rejects a handshake timestamped
+// earlier than the last one seen from that peer).
+
+let clockFieldsInitialized = false;
+let timezoneOptionsLoaded = false;
+let pendingTimezone = null;
+let currentFormTimezone = null;
+
+function applyPendingTimezone() {
+  if (timezoneOptionsLoaded && pendingTimezone) {
+    document.getElementById("clock-tz").value = pendingTimezone;
+    currentFormTimezone = pendingTimezone;
+    pendingTimezone = null;
+  }
+}
+
+// Interpret dateStr/timeStr as wall-clock time in `timeZone` and return the
+// UTC instant (ms) it corresponds to. Intl has no direct "zoned time -> UTC"
+// call, so this uses the standard trick: read the fields back as if they
+// were UTC, see what that instant actually looks like when formatted in
+// `timeZone`, and use the difference as the zone's offset at that moment
+// (this is what makes it DST-correct instead of a fixed offset).
+function zonedTimeToUtcMs(dateStr, timeStr, timeZone) {
+  const baseline = new Date(`${dateStr}T${timeStr}Z`).getTime();
+  const dtf = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hour12: false,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+  const parts = Object.fromEntries(dtf.formatToParts(baseline).map((p) => [p.type, p.value]));
+  const hour = parts.hour === "24" ? 0 : Number(parts.hour);
+  const asIfLocalMs = Date.UTC(
+    Number(parts.year),
+    Number(parts.month) - 1,
+    Number(parts.day),
+    hour,
+    Number(parts.minute),
+    Number(parts.second)
+  );
+  return baseline - (asIfLocalMs - baseline);
+}
+
+// Inverse direction: a UTC instant -> the wall-clock date/time fields for it
+// in `timeZone`.
+function utcMsToZonedFields(utcMs, timeZone) {
+  const dtf = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hour12: false,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+  const parts = Object.fromEntries(dtf.formatToParts(utcMs).map((p) => [p.type, p.value]));
+  const hour = parts.hour === "24" ? "00" : parts.hour;
+  return {
+    date: `${parts.year}-${parts.month}-${parts.day}`,
+    time: `${hour}:${parts.minute}:${parts.second}`,
+  };
+}
+
+function handleTimezoneChange() {
+  const dateInput = document.getElementById("clock-date");
+  const timeInput = document.getElementById("clock-time");
+  const newTz = document.getElementById("clock-tz").value;
+
+  if (currentFormTimezone && dateInput.value && timeInput.value) {
+    const utcMs = zonedTimeToUtcMs(dateInput.value, timeInput.value, currentFormTimezone);
+    const fields = utcMsToZonedFields(utcMs, newTz);
+    dateInput.value = fields.date;
+    timeInput.value = fields.time;
+  }
+  currentFormTimezone = newTz;
+}
+
+document.getElementById("clock-tz").addEventListener("change", handleTimezoneChange);
+
+// Ticks the displayed clock every second between polls, rather than only
+// updating in 5s jumps -- resynced against the server's actual value on
+// every poll (renderClock below) so it can't drift or go stale.
+let clockBaseServerMs = null;
+let clockBaseLocalMs = null;
+let clockTimezone = null;
+
+function updateClockDisplay() {
+  if (clockBaseServerMs == null) return;
+  const estimated = new Date(clockBaseServerMs + (Date.now() - clockBaseLocalMs));
+  // Explicitly in the Pi's own configured timezone -- this panel is about
+  // the Pi's system clock, not whatever timezone the viewing browser is in.
+  const opts = clockTimezone ? { timeZone: clockTimezone } : undefined;
+  setText("clock-now", estimated.toLocaleString(undefined, opts));
+}
+
+setInterval(updateClockDisplay, 1000);
+
+function renderClock(clock) {
+  clockBaseServerMs = new Date(clock.now).getTime();
+  clockBaseLocalMs = Date.now();
+  clockTimezone = clock.timezone || null;
+  updateClockDisplay();
+
+  const ntpToggle = document.getElementById("clock-ntp-toggle");
+  ntpToggle.checked = clock.ntp_enabled;
+  ntpToggle.title = clock.ntp_enabled ? "Enabled" : "Disabled";
+
+  const ntp = document.getElementById("clock-ntp");
+  if (!clock.ntp_enabled) {
+    ntp.textContent = "Disabled";
+    ntp.className = "status unknown";
+  } else {
+    ntp.textContent = clock.ntp_synchronized ? "synchronized" : "not synchronized";
+    ntp.className = `status ${clock.ntp_synchronized ? "up" : "unknown"}`;
+  }
+
+  // Only prefill the form once, on first load -- otherwise a poll landing
+  // mid-edit would stomp on whatever the user is currently typing.
+  if (clockFieldsInitialized) return;
+  clockFieldsInitialized = true;
+
+  const now = new Date(clock.now);
+  const pad = (n) => String(n).padStart(2, "0");
+  document.getElementById("clock-date").value =
+    `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  document.getElementById("clock-time").value =
+    `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+  if (clock.timezone) {
+    // The timezone <select>'s options load separately (see loadTimezones)
+    // and may not have arrived yet -- stash the value and apply it once
+    // both are ready, in whichever order they actually resolve.
+    pendingTimezone = clock.timezone;
+    applyPendingTimezone();
+  }
+}
+
+async function loadTimezones() {
+  try {
+    const res = await fetch("/api/timezones");
+    if (!res.ok) return;
+    const zones = await res.json();
+    const select = document.getElementById("clock-tz");
+    select.innerHTML = zones
+      .map((z) => `<option value="${z.name}">${z.name}${z.offset ? ` (${z.offset})` : ""}</option>`)
+      .join("");
+    timezoneOptionsLoaded = true;
+    applyPendingTimezone();
+  } catch (err) {
+    // non-fatal -- Set Clock still works, just without a timezone change
+  }
+}
+
+async function applyClock() {
+  const btn = document.getElementById("clock-apply");
+  const message = document.getElementById("clock-message");
+  const date = document.getElementById("clock-date").value;
+  const time = document.getElementById("clock-time").value;
+  const timezone = document.getElementById("clock-tz").value.trim();
+
+  if (!date || !time) {
+    message.textContent = "Date and time are required.";
+    message.className = "message error";
+    return;
+  }
+
+  btn.disabled = true;
+  message.textContent = "";
+  message.className = "message";
+  try {
+    const res = await fetch("/api/clock/set", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        date,
+        time: time.length === 5 ? `${time}:00` : time,
+        timezone: timezone || null,
+      }),
+    });
+    const data = await res.json();
+    if (res.ok && data.status === "ok") {
+      message.textContent = "Clock updated.";
+      message.className = "message ok";
+      renderClock(data.clock);
+    } else {
+      message.textContent = data.message || "Failed to update clock.";
+      message.className = "message error";
+    }
+  } catch (err) {
+    message.textContent = "Request failed.";
+    message.className = "message error";
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+document.getElementById("clock-apply").addEventListener("click", applyClock);
+loadTimezones();
+
+// Live control, independent of the Set Clock button below -- flipping this
+// off lets a manually-set time actually stick (see set_clock() server-side:
+// it only re-enables NTP afterward if it was already on), flipping it back
+// on resumes normal auto-sync.
+async function toggleNtp() {
+  const toggle = document.getElementById("clock-ntp-toggle");
+  const message = document.getElementById("clock-message");
+  const desired = toggle.checked;
+
+  toggle.disabled = true;
+  message.textContent = "";
+  message.className = "message";
+  try {
+    const res = await fetch("/api/clock/ntp", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: desired }),
+    });
+    const data = await res.json();
+    if (res.ok && data.status === "ok") {
+      renderClock(data.clock);
+    } else {
+      toggle.checked = !desired;
+      message.textContent = data.message || "Failed to change NTP state.";
+      message.className = "message error";
+    }
+  } catch (err) {
+    toggle.checked = !desired;
+    message.textContent = "Request failed.";
+    message.className = "message error";
+  } finally {
+    toggle.disabled = false;
+  }
+}
+
+document.getElementById("clock-ntp-toggle").addEventListener("change", toggleNtp);
+
+// Purely client-side -- the browser already knows its own clock and
+// timezone (Intl.DateTimeFormat's resolvedOptions), no server round-trip
+// needed. Compared against the Pi's own extrapolated time (same estimate
+// updateClockDisplay ticks every second) so a skew shows up directly,
+// rather than making the user eyeball two absolute timestamps against
+// each other.
+function getClientTime() {
+  const now = new Date();
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  let text = `${now.toLocaleString()} (${tz})`;
+
+  if (clockBaseServerMs != null) {
+    const piNowMs = clockBaseServerMs + (Date.now() - clockBaseLocalMs);
+    const skewMs = now.getTime() - piNowMs;
+    const skewSec = Math.round(Math.abs(skewMs) / 1000);
+    const direction = skewMs >= 0 ? "ahead of" : "behind";
+    let skewText;
+    if (skewSec < 1) {
+      skewText = "in sync with the Pi";
+    } else if (skewSec < 60) {
+      skewText = `${skewSec}s ${direction} the Pi`;
+    } else if (skewSec < 3600) {
+      skewText = `${Math.round(skewSec / 60)}m ${direction} the Pi`;
+    } else {
+      skewText = `${(skewSec / 3600).toFixed(1)}h ${direction} the Pi`;
+    }
+    text += ` — ${skewText}`;
+  }
+
+  setText("clock-client-time", text);
+
+  // Also prefill the Set Clock form with this same reading, so the button
+  // doubles as "sync the Pi to my device" -- one click here, one click on
+  // Set Clock (turning off the NTP checkbox first if it's on, otherwise
+  // this gets stepped straight back per set_clock()'s own behavior).
+  const pad = (n) => String(n).padStart(2, "0");
+  document.getElementById("clock-date").value =
+    `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  document.getElementById("clock-time").value =
+    `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+  const tzSelect = document.getElementById("clock-tz");
+  tzSelect.value = tz;
+  currentFormTimezone = tz;
+}
+
+document.getElementById("clock-get-client-time").addEventListener("click", getClientTime);
 
 // --- Backup ------------------------------------------------------------
 

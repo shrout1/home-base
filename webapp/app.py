@@ -28,6 +28,7 @@ import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo, available_timezones
 from pathlib import Path
 
 from flask import Flask, jsonify, request, send_file, send_from_directory
@@ -592,6 +593,109 @@ def save_ddns_config(payload):
 
 
 # ---------------------------------------------------------------------------
+# System clock -- a Pi has no battery-backed RTC, so a power outage loses
+# all sense of time until NTP reconnects; systemd-timesyncd's own periodic
+# save-to-disk (SaveIntervalSec) already covers most of that gap on boot.
+# This card is the other half: visibility into whether NTP is actually
+# synced right now, and a manual override for when it isn't (or shouldn't
+# be, e.g. testing) -- ported from pi5-router's dashboard, which carries the
+# same "wrong system clock silently breaks a VPN handshake" motivation
+# (WireGuard's replay protection rejects a handshake timestamped earlier
+# than the last one seen from that peer).
+# ---------------------------------------------------------------------------
+_TIMEZONE_LIST_CACHE = None
+
+
+def _utc_offset_minutes(tz_name):
+    try:
+        offset = datetime.now(ZoneInfo(tz_name)).utcoffset()
+    except Exception:
+        return None
+    if offset is None:
+        return None
+    return int(offset.total_seconds() // 60)
+
+
+def _format_utc_offset_minutes(total_minutes):
+    sign = "+" if total_minutes >= 0 else "-"
+    hours, minutes = divmod(abs(total_minutes), 60)
+    return f"UTC{sign}{hours}:{minutes:02d}" if minutes else f"UTC{sign}{hours}"
+
+
+def get_timezone_list():
+    global _TIMEZONE_LIST_CACHE
+    if _TIMEZONE_LIST_CACHE is None:
+        entries = [(_utc_offset_minutes(name) or 0, name) for name in available_timezones()]
+        entries.sort(key=lambda e: (-e[0], e[1]))
+        _TIMEZONE_LIST_CACHE = [
+            {"name": name, "offset": _format_utc_offset_minutes(minutes)} for minutes, name in entries
+        ]
+    return _TIMEZONE_LIST_CACHE
+
+
+def get_ntp_enabled():
+    # Distinct from NTPSynchronized below: this is the administrative
+    # on/off switch (`timedatectl set-ntp` / the dashboard's NTP checkbox),
+    # not whether a sync has actually succeeded yet.
+    out, _err, _rc = run(["timedatectl", "show", "-p", "NTP", "--value"])
+    return out == "yes"
+
+
+def get_clock_status():
+    tz, _err, _rc = run(["timedatectl", "show", "-p", "Timezone", "--value"])
+    ntp_synced, _err, _rc = run(["timedatectl", "show", "-p", "NTPSynchronized", "--value"])
+    return {
+        "now": datetime.now().astimezone().isoformat(),
+        "timezone": tz or None,
+        "ntp_synchronized": ntp_synced == "yes",
+        "ntp_enabled": get_ntp_enabled(),
+    }
+
+
+_clock_lock = threading.Lock()
+
+
+def set_ntp_enabled(enabled):
+    with _clock_lock:
+        _out, _err, rc = run(["timedatectl", "set-ntp", "true" if enabled else "false"], timeout=10)
+    return rc == 0
+
+
+def set_clock(date_str, time_str, tz):
+    """date_str: "YYYY-MM-DD", time_str: "HH:MM:SS", tz: IANA zone name or None."""
+    try:
+        dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return False, "invalid date/time"
+
+    if tz and tz not in available_timezones():
+        return False, "unknown timezone"
+
+    with _clock_lock:
+        if tz:
+            _out, _err, rc = run(["timedatectl", "set-timezone", tz], timeout=10)
+            if rc != 0:
+                return False, "failed to set timezone"
+
+        # timedatectl refuses manual set-time while NTP is actively managing
+        # the clock, so drop it just long enough to set the time -- then
+        # restore whatever state NTP was actually in beforehand, rather than
+        # unconditionally forcing it back on. Re-enabling immediately steps
+        # the clock straight back (timesyncd resyncs in well under a second),
+        # which would silently undo the manual set this endpoint exists for.
+        ntp_was_enabled = get_ntp_enabled()
+        if ntp_was_enabled:
+            run(["timedatectl", "set-ntp", "false"], timeout=10)
+        _out, _err, rc = run(["timedatectl", "set-time", dt.strftime("%Y-%m-%d %H:%M:%S")], timeout=10)
+        if ntp_was_enabled:
+            run(["timedatectl", "set-ntp", "true"], timeout=10)
+
+    if rc != 0:
+        return False, "failed to set time"
+    return True, None
+
+
+# ---------------------------------------------------------------------------
 # OpenVPN client certificates -- generated via the same easy-rsa PKI
 # install.sh sets up (fresh) or finds already there (adopted). Always at a
 # fixed path regardless of which: install.sh's fresh-provision path uses the
@@ -1116,9 +1220,40 @@ def api_status():
             "poll_interval_seconds": int(conf.get("POLL_INTERVAL_SECONDS", "900")),
             "openvpn_enabled": conf.get("ENABLE_OPENVPN", "true") == "true",
             "wireguard_enabled": conf.get("ENABLE_WIREGUARD", "false") == "true",
+            "clock": get_clock_status(),
             **state,
         }
     )
+
+
+@app.route("/api/timezones")
+def api_timezones():
+    return jsonify(get_timezone_list())
+
+
+@app.route("/api/clock/set", methods=["POST"])
+def api_clock_set():
+    payload = request.get_json(silent=True) or {}
+    date_str = payload.get("date")
+    time_str = payload.get("time")
+    tz = payload.get("timezone") or None
+
+    if not date_str or not time_str:
+        return jsonify({"status": "error", "message": "date and time are required"}), 400
+
+    ok, message = set_clock(date_str, time_str, tz)
+    if not ok:
+        return jsonify({"status": "error", "message": message}), 400
+    return jsonify({"status": "ok", "clock": get_clock_status()})
+
+
+@app.route("/api/clock/ntp", methods=["POST"])
+def api_clock_ntp():
+    payload = request.get_json(silent=True) or {}
+    ok = set_ntp_enabled(bool(payload.get("enabled")))
+    if not ok:
+        return jsonify({"status": "error", "message": "failed to change NTP state"}), 400
+    return jsonify({"status": "ok", "clock": get_clock_status()})
 
 
 @app.route("/api/public-ip")
