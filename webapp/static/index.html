@@ -18,8 +18,7 @@
       <h2>Whitelist source</h2>
       <dl>
         <dt>Type</dt><dd id="source-type">&mdash;</dd>
-        <dt>Detail</dt><dd id="source-detail">&mdash;</dd>
-        <dt>nftables target</dt><dd id="nft-target">&mdash;</dd>
+        <dt class="detail-row">Detail</dt><dd id="source-detail" class="detail-row">&mdash;</dd>
         <dt>Poll interval</dt><dd id="poll-interval">&mdash;</dd>
       </dl>
 
@@ -69,9 +68,9 @@
         <dt>Last attempt</dt><dd id="sync-last">&mdash;</dd>
         <dt>Last success</dt><dd id="sync-last-success">&mdash;</dd>
       </dl>
+      <ul id="sync-warnings" class="warning-list" hidden></ul>
       <button id="sync-now">Sync now</button>
       <p id="sync-message" class="message"></p>
-      <ul id="sync-warnings" class="warning-list" hidden></ul>
     </div>
 
     <div class="card" id="card-public-ip">
@@ -84,8 +83,6 @@
         <dt>In sync?</dt><dd id="ddns-sync-status" class="status">&mdash;</dd>
         <dt>noip-duc service</dt><dd id="noip-service-status">&mdash;</dd>
       </dl>
-      <button id="ddns-sync-now">Sync now</button>
-      <p id="ddns-sync-message" class="message"></p>
       <details class="help-details">
         <summary>&rsaquo; VPN &amp; Dynamic DNS</summary>
         <p class="power-desc">If a VPN client can't connect from outside at all --
@@ -94,6 +91,8 @@
           clients are dialing an address that isn't you anymore, and no amount
           of correct firewall/whitelist config on this box will fix that.</p>
       </details>
+      <button id="ddns-sync-now">Sync now</button>
+      <p id="ddns-sync-message" class="message"></p>
     </div>
 
     <div class="card" id="card-configure-ddns">
@@ -177,10 +176,10 @@
     <div class="clock-form">
       <label>New peer name <input type="text" id="new-wg-client-name" placeholder="e.g. pi5-router"></label>
     </div>
-    <button id="generate-wg-client">Generate peer &amp; download</button>
     <p class="power-desc">Save the downloaded config now -- the private key is never
       stored server-side, so this is the only chance to get it. Losing it means
       deleting this peer and generating a new one.</p>
+    <button id="generate-wg-client">Generate peer &amp; download</button>
     <p id="wg-client-message" class="message"></p>
   </section>
 

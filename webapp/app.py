@@ -1212,11 +1212,6 @@ def api_status():
     return jsonify(
         {
             "source": get_source_summary(conf),
-            "nft_target": {
-                "family": conf.get("NFT_FAMILY", "inet"),
-                "table": conf.get("NFT_TABLE", "filter"),
-                "set": conf.get("NFT_SET", "vpn_allowed"),
-            },
             "poll_interval_seconds": int(conf.get("POLL_INTERVAL_SECONDS", "900")),
             "openvpn_enabled": conf.get("ENABLE_OPENVPN", "true") == "true",
             "wireguard_enabled": conf.get("ENABLE_WIREGUARD", "false") == "true",

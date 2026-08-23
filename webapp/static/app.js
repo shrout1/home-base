@@ -48,7 +48,6 @@ function renderSource(data) {
     setText("source-detail", data.source.source_type === "raw_url" ? "URL MISSING" : "—");
   }
 
-  setText("nft-target", `${data.nft_target.family} ${data.nft_target.table} ${data.nft_target.set}`);
   setText("poll-interval", `${data.poll_interval_seconds}s`);
 }
 

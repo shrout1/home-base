@@ -126,6 +126,20 @@ dd {
   word-break: break-word;
 }
 
+dt.detail-row,
+dd.detail-row {
+  grid-column: 1 / -1;
+}
+dd.detail-row {
+  text-align: left;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.4rem 0.6rem;
+  word-break: break-all;
+  font-size: 0.8rem;
+}
+
 .status.up, .status.ok { color: var(--ok); }
 .status.down, .status.error { color: var(--bad); }
 .status.unknown, .status.never_run { color: var(--warn); }
