@@ -283,6 +283,9 @@ button:disabled {
   font-size: 0.85rem;
   color: var(--muted);
 }
+.clock-form label[hidden] {
+  display: none;
+}
 .clock-form input,
 .clock-form select {
   font-size: 0.9rem;

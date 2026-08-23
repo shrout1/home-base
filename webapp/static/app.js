@@ -300,7 +300,7 @@ document.getElementById("sync-now").addEventListener("click", syncNow);
 
 function updateSourceFormVisibility() {
   const type = document.getElementById("source-type-select").value;
-  document.getElementById("source-url-help").hidden = type !== "raw_url";
+  document.getElementById("source-url-help-details").hidden = type !== "raw_url";
   document.getElementById("source-url-field").hidden = type !== "raw_url";
   document.getElementById("source-gist-id-field").hidden = type !== "github_gist";
   document.getElementById("source-gist-token-field").hidden = type !== "github_gist";
