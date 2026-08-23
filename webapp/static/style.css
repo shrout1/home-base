@@ -80,6 +80,19 @@ main {
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 1rem 1.25rem;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Cards sharing a grid row stretch to match the tallest one, which left
+   shorter cards' action buttons floating right after their (shorter)
+   content instead of at a consistent bottom offset. Pushes the button --
+   and whatever directly follows it, e.g. its own status message -- down
+   to the bottom of the card as a unit. Only the direct-child action
+   button, not header-row icon buttons like "Get client time", which live
+   in their own nested flex row. */
+.card > button {
+  margin-top: auto;
 }
 
 .card h2 {
